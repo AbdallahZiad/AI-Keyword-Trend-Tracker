@@ -1,0 +1,27 @@
+# Byte-compiled / cache files
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+
+# Virtual environments
+venv/
+.env
+
+# IDE
+.idea/
+
+# OS junk
+.DS_Store
+Thumbs.db
+
+# Logs and output
+*.log
+
+# Data/cache
+data/*.csv
+data/*.json
+
+# Secrets (optional: version control through .env.template instead)
+.env
