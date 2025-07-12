@@ -1,0 +1,7 @@
+openai
+pandas
+scikit-learn
+sentence-transformers
+slack_sdk
+python-dotenv
+google-ads==22.0.0

@@ -25,3 +25,5 @@ data/*.json
 
 # Secrets (optional: version control through .env.template instead)
 .env
+
+main.py
