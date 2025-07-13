@@ -12,7 +12,7 @@ class FakeProvider(KeywordDataProvider):
         manual_trend_boosts: Optional[Dict[str, Dict[str, float]]] = None,
     ):
         self.data = data
-        self.month_index = month_index or datetime.now().month - 1
+        self.month_index = month_index if month_index is not None else datetime.now().month - 1
         self.boosts = manual_trend_boosts or {}
 
     def get_monthly_volumes_by_year(self, keyword: str) -> Dict[int, List[int]]:
