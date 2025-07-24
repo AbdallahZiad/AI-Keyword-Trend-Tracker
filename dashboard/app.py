@@ -142,7 +142,7 @@ st.markdown(
         display: flex !important; align-items: center !important; justify-content: center !important;
     }
     .stButton > button {
-        border-radius: 5_pixels !important; padding: 10px 20px !important; font-weight: 600 !important;
+        border-radius: 5px !important; padding: 10px 20px !important; font-weight: 600 !important;
         border: none !important; box-shadow: 0 2px 5px rgba(0,0,0,0.1) !important;
         transition: background-color 0.2s, box-shadow 0.2s, color 0.2s !important;
         width: fit-content !important; display: inline-block !important;
@@ -166,29 +166,53 @@ def run():
     display_section_title("Keyword Management")
 
     # Initialize session state for keyword text content on first run
-    if "keywords_text_content" not in st.session_state:
+    if "active_keywords_for_analysis" not in st.session_state:
         default_keywords_list = load_keywords_from_txt(KEYWORDS_FILE_PATH)
-        st.session_state.keywords_text_content = "\n".join(default_keywords_list)
+        st.session_state.active_keywords_for_analysis = "\n".join(default_keywords_list)
+        # Also initialize the editable text area content
+        st.session_state.editable_keywords_text = st.session_state.active_keywords_for_analysis
 
     with st.expander("Configure Keywords", expanded=True):
         st.markdown("Enter keywords below, one per line. These will be used for analysis.")
         st.markdown("---") # Visual separator
 
         # Text area for manual input/display of current keywords
-        edited_keywords_text = st.text_area(
+        # The key here ensures edits in the text area update `st.session_state.keywords_text_input_raw`
+        edited_keywords_raw = st.text_area(
             "Keywords List:",
-            value=st.session_state.keywords_text_content,
+            value=st.session_state.editable_keywords_text, # Display this content
             height=200,
-            help="Type or paste keywords, **one per line**. This is the primary source.",
-            key="manual_keyword_input" # Unique key for this widget
+            # Updated help text to remove misleading Ctrl+Enter hint
+            help="Type or paste keywords, **one per line**. Click 'Apply Keywords' below to update.",
+            key="keywords_text_input_raw" # This key directly stores the raw text area content in session_state.keywords_text_input_raw
         )
 
-        # Update session state if text area was manually edited
-        # This ensures manual edits persist and become the source of truth
-        if edited_keywords_text != st.session_state.keywords_text_content:
-            st.session_state.keywords_text_content = edited_keywords_text
-            st.toast("Keywords updated!", icon="✏️")
-            st.rerun() # Rerun to apply changes immediately
+        # Update the temporary editable state if the text area content changes
+        # This allows the text area to update instantly without triggering a full rerun
+        if edited_keywords_raw != st.session_state.editable_keywords_text:
+            st.session_state.editable_keywords_text = edited_keywords_raw
+
+
+        # Buttons for Apply and Clear
+        # Adjusted column widths for better alignment
+        col_buttons = st.columns([0.25, 0.25, 1.5]) # Adjusted column ratio for better alignment
+
+        with col_buttons[0]:
+            # Shortened button text for better alignment
+            if st.button("Apply Keywords", key="apply_keywords_button"):
+                # Only update active_keywords_for_analysis if there's a change
+                if st.session_state.editable_keywords_text != st.session_state.active_keywords_for_analysis:
+                    st.session_state.active_keywords_for_analysis = st.session_state.editable_keywords_text
+                    st.rerun() # Trigger a full rerun to update the pipeline
+                # Removed: st.toast("Keywords are already up-to-date.", icon="👍")
+
+
+        with col_buttons[1]:
+            if st.button("Clear Keywords", key="clear_keywords_button"):
+                st.session_state.editable_keywords_text = ""
+                st.session_state.active_keywords_for_analysis = "" # Clear the active ones too
+                st.rerun() # Trigger a full rerun to clear the display
+
 
         st.markdown("---") # Visual separator
 
@@ -196,31 +220,31 @@ def run():
         uploaded_file = st.file_uploader(
             "Or upload a keywords.txt file:",
             type=["txt"],
-            help="Uploading a plain text (.txt) file will overwrite the keywords in the text area above. Ensure it's UTF-8 encoded with one keyword per line.",
-            key="keyword_file_uploader" # Unique key for this widget
+            help="Uploading a plain text (.txt) file will overwrite the keywords in the text area above and automatically trigger analysis. Ensure it's UTF-8 encoded with one keyword per line.",
+            key="keyword_file_uploader"
         )
 
         if uploaded_file is not None:
             try:
                 # Read and decode the file content
                 file_contents = uploaded_file.read().decode("utf-8")
-                # Only update if content changed to avoid unnecessary reruns
-                if file_contents != st.session_state.keywords_text_content:
-                    st.session_state.keywords_text_content = file_contents
-                    st.toast("Keywords loaded from file!", icon="📄")
-                    st.rerun() # Rerun to apply changes immediately
+                # Update both the editable text area and the active keywords for analysis
+                if file_contents != st.session_state.active_keywords_for_analysis or \
+                   file_contents != st.session_state.editable_keywords_text:
+                    st.session_state.editable_keywords_text = file_contents
+                    st.session_state.active_keywords_for_analysis = file_contents
+                    st.rerun() # Trigger a full rerun
+                # Removed: st.toast("Uploaded file content is identical to current keywords.", icon="ℹ️")
+
             except UnicodeDecodeError:
                 st.error("Error: Could not decode the file. Please ensure it is a plain text file (UTF-8 encoded).")
-                # Optionally, clear the text area or revert to previous valid state
-                # For now, we'll let the user see the error and manually correct/re-upload
             except Exception as e:
                 st.error(f"An unexpected error occurred while reading the file: {e}")
-                # Optionally, clear the text area or revert to previous valid state
 
 
-    # Determine the actual keywords list from the session state content
+    # Determine the actual keywords list from the active session state content
     loaded_keywords = [
-        kw.strip() for kw in st.session_state.keywords_text_content.split('\n') if kw.strip()
+        kw.strip() for kw in st.session_state.active_keywords_for_analysis.split('\n') if kw.strip()
     ]
 
     # Handle case where no keywords are provided at all
