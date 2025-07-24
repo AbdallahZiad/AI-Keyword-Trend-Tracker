@@ -32,13 +32,13 @@ def load_keywords_from_txt(path: Path) -> list[str]:
     """
     abs_path = path.resolve()
     if not abs_path.exists():
-        st.error(f"Error: Keywords file not found at {abs_path}")
+        # st.warning(f"Keywords file not found at {abs_path}. Please upload or enter keywords.")
         return []
     with open(abs_path, "r", encoding="utf-8") as f:
         return [line.strip() for line in f if line.strip()]
 
 
-@st.cache_data(show_spinner=False) # <--- ADDED THIS!
+@st.cache_data(show_spinner=False)
 def get_expanded_keywords_cached(loaded_keywords: list[str]) -> list[str]:
     """
     Expands keywords. Cached, as expansion depends only on loaded keywords.
@@ -47,7 +47,7 @@ def get_expanded_keywords_cached(loaded_keywords: list[str]) -> list[str]:
     return expand_keywords_batch(loaded_keywords)
 
 
-@st.cache_data(show_spinner=False) # <--- ADDED THIS!
+@st.cache_data(show_spinner=False)
 def get_enriched_data_cached(expanded_keywords: list[str], current_period_id: str):
     """
     Generates fake trend data. Cached, but cache busts if 'expanded_keywords'
@@ -57,7 +57,7 @@ def get_enriched_data_cached(expanded_keywords: list[str], current_period_id: st
     return provider.generate_fake_output()
 
 
-@st.cache_data(show_spinner=False) # <--- ADDED THIS!
+@st.cache_data(show_spinner=False)
 def get_analysis_results_cached(enriched_data: list[dict]):
     """
     Analyzes trend data. Cached, as analysis depends only on enriched data.
@@ -142,7 +142,7 @@ st.markdown(
         display: flex !important; align-items: center !important; justify-content: center !important;
     }
     .stButton > button {
-        border-radius: 5px !important; padding: 10px 20px !important; font-weight: 600 !important;
+        border-radius: 5_pixels !important; padding: 10px 20px !important; font-weight: 600 !important;
         border: none !important; box-shadow: 0 2px 5px rgba(0,0,0,0.1) !important;
         transition: background-color 0.2s, box-shadow 0.2s, color 0.2s !important;
         width: fit-content !important; display: inline-block !important;
@@ -162,16 +162,81 @@ def run():
     display_header()
     st.markdown("<div class='page-divider'></div>", unsafe_allow_html=True)
 
+    # --- Keyword Management Section ---
+    display_section_title("Keyword Management")
+
+    # Initialize session state for keyword text content on first run
+    if "keywords_text_content" not in st.session_state:
+        default_keywords_list = load_keywords_from_txt(KEYWORDS_FILE_PATH)
+        st.session_state.keywords_text_content = "\n".join(default_keywords_list)
+
+    with st.expander("Configure Keywords", expanded=True):
+        st.markdown("Enter keywords below, one per line. These will be used for analysis.")
+        st.markdown("---") # Visual separator
+
+        # Text area for manual input/display of current keywords
+        edited_keywords_text = st.text_area(
+            "Keywords List:",
+            value=st.session_state.keywords_text_content,
+            height=200,
+            help="Type or paste keywords, **one per line**. This is the primary source.",
+            key="manual_keyword_input" # Unique key for this widget
+        )
+
+        # Update session state if text area was manually edited
+        # This ensures manual edits persist and become the source of truth
+        if edited_keywords_text != st.session_state.keywords_text_content:
+            st.session_state.keywords_text_content = edited_keywords_text
+            st.toast("Keywords updated!", icon="✏️")
+            st.rerun() # Rerun to apply changes immediately
+
+        st.markdown("---") # Visual separator
+
+        # File uploader
+        uploaded_file = st.file_uploader(
+            "Or upload a keywords.txt file:",
+            type=["txt"],
+            help="Uploading a plain text (.txt) file will overwrite the keywords in the text area above. Ensure it's UTF-8 encoded with one keyword per line.",
+            key="keyword_file_uploader" # Unique key for this widget
+        )
+
+        if uploaded_file is not None:
+            try:
+                # Read and decode the file content
+                file_contents = uploaded_file.read().decode("utf-8")
+                # Only update if content changed to avoid unnecessary reruns
+                if file_contents != st.session_state.keywords_text_content:
+                    st.session_state.keywords_text_content = file_contents
+                    st.toast("Keywords loaded from file!", icon="📄")
+                    st.rerun() # Rerun to apply changes immediately
+            except UnicodeDecodeError:
+                st.error("Error: Could not decode the file. Please ensure it is a plain text file (UTF-8 encoded).")
+                # Optionally, clear the text area or revert to previous valid state
+                # For now, we'll let the user see the error and manually correct/re-upload
+            except Exception as e:
+                st.error(f"An unexpected error occurred while reading the file: {e}")
+                # Optionally, clear the text area or revert to previous valid state
+
+
+    # Determine the actual keywords list from the session state content
+    loaded_keywords = [
+        kw.strip() for kw in st.session_state.keywords_text_content.split('\n') if kw.strip()
+    ]
+
+    # Handle case where no keywords are provided at all
+    if not loaded_keywords:
+        st.warning("No keywords provided. Please enter keywords above or upload a file to proceed.")
+        # Stop execution here if no keywords, to prevent errors in subsequent pipeline steps
+        st.stop()
+
+
+    st.markdown("<div class='page-divider'></div>", unsafe_allow_html=True) # Visual separator
+
     # Get current day-month-year string for cache busting
-    # This ensures new data is fetched if the day changes
     current_day_month_year_str = datetime.datetime.now().strftime("%Y-%m-%d")
 
     # --- Data Pipeline Execution ---
-    # Keywords are loaded first, no spinner needed as it's not cached.
-    loaded_keywords = load_keywords_from_txt(KEYWORDS_FILE_PATH)
-
-    # All subsequent steps are wrapped in st.spinner to provide user-friendly messages.
-    # The spinner appears when the function is first run or its cache is invalidated.
+    # All steps are wrapped in st.spinner to provide user-friendly messages.
     # The show_spinner=False in the @st.cache_data decorator ensures Streamlit's default
     # "Running function_name(...)" message is suppressed.
     with st.spinner("Expanding keywords..."):
@@ -187,48 +252,48 @@ def run():
     # --- Debugging/Pipeline Status Sections (only shown in DEBUG_MODE) ---
     if DEBUG_MODE:
         st.subheader("Debugging & Pipeline Status")
-        with st.expander("Show Loaded Keywords (from keywords.txt)", expanded=True):
+        with st.expander("Show Loaded Keywords (from current input)", expanded=True):
             if loaded_keywords:
                 st.write(loaded_keywords)
             else:
-                st.warning("No keywords loaded or file not found.")
-        st.markdown("---")  # Visual separator
+                st.info("No keywords loaded from input.")
+        st.markdown("---") # Visual separator
 
         with st.expander("Show Expanded Keywords", expanded=True):
             if expanded_keywords:
                 st.write(expanded_keywords)
             else:
                 st.info("No keywords to expand.")
-        st.markdown("---")  # Visual separator
+        st.markdown("---") # Visual separator
 
         with st.expander("Show Generated Trend Data (from FakeProvider)", expanded=True):
             if enriched_data:
-                st.write(enriched_data[:5])  # Displaying a slice as output can be large
+                st.write(enriched_data[:5]) # Displaying a slice as output can be large
                 if len(enriched_data) > 5:
                     st.info(f"Showing first 5 entries out of {len(enriched_data)} generated data points.")
             else:
                 st.info("No keywords to generate fake data for.")
-        st.markdown("---")  # Visual separator
+        st.markdown("---") # Visual separator
 
         with st.expander("Show Analysis Results (from TrendAnalyzer)", expanded=True):
             if analysis_results_for_table:
-                st.write(analysis_results_for_table[:5])  # Displaying a slice for debug/preview
+                st.write(analysis_results_for_table[:5]) # Displaying a slice for debug/preview
                 if len(analysis_results_for_table) > 5:
                     st.info(f"Showing first 5 entries out of {len(analysis_results_for_table)} analyzed results.")
             else:
                 st.info("No data to analyze.")
-        st.markdown("---")  # Visual separator
+        st.markdown("---") # Visual separator
 
 
     # --- DYNAMICALLY POPULATING THE TABLE WITH ANALYSIS RESULTS ---
     display_section_title("Tracked Categories & Keywords")
 
     table_data = []
-    available_keywords = []  # To store keywords for separate checkbox selection
+    available_keywords = [] # To store keywords for separate checkbox selection
 
     for item in analysis_results_for_table:
         keyword = item.get('keyword', 'N/A')
-        available_keywords.append(keyword)  # Populate the list for checkboxes
+        available_keywords.append(keyword) # Populate the list for checkboxes
 
         current_volume = item.get('current', 0)
         pct_change_month = item.get('pct_change_month')
@@ -262,18 +327,21 @@ def run():
 
     selected_keywords_for_graph = []
     if available_keywords:
-        cols = st.columns(4)  # Arrange checkboxes in 4 columns
+        # Default to selecting the first keyword if none are selected yet
+        # Ensure session state is initialized for each checkbox
+        for i, kw in enumerate(available_keywords):
+            if f"checkbox_{kw.replace(' ', '_')}" not in st.session_state:
+                st.session_state[f"checkbox_{kw.replace(' ', '_')}"] = (i == 0) # Check first by default
+
+        # Create columns for checkboxes dynamically
+        cols = st.columns(4) # Arrange checkboxes in 4 columns
         for i, kw in enumerate(available_keywords):
             with cols[i % 4]:
-                # Initialize state for checkboxes if not already present
-                if f"checkbox_{kw.replace(' ', '_')}" not in st.session_state:
-                    st.session_state[f"checkbox_{kw.replace(' ', '_')}"] = (i == 0)  # Check first by default
-
-                # Display the checkbox. If checked, add keyword to selection list
                 if st.checkbox(kw, key=f"checkbox_{kw.replace(' ', '_')}"):
                     selected_keywords_for_graph.append(kw)
     else:
         st.info("No keywords available to select for the graph.")
+
 
     # --- TREND HISTORY GRAPH ---
     display_section_title("Trend History (Selected Categories)")
