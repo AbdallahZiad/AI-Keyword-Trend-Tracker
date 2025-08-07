@@ -6,7 +6,7 @@ import os
 import sys
 from pathlib import Path
 import datetime
-import numpy as np
+import altair as alt
 
 # Add the project root to sys.path
 project_root = Path(__file__).parent.parent
@@ -14,14 +14,14 @@ sys.path.insert(0, str(project_root))
 
 # Imports from core
 from core.keyword_expander import expand_keywords_batch
-from core.data_provider.fake_provider import FakeProvider
+from core.data_provider.google_ads_provider import GoogleAdsProvider
 from core.trend_analyzer import TrendAnalyzer
 
 # Define the path to keywords.txt relative to the app.py location
 KEYWORDS_FILE_PATH = project_root / "data" / "keywords.txt"
 
 # --- GLOBAL SETTINGS ---
-DEBUG_MODE = False # Set to True to show pipeline status and expanded data sections
+DEBUG_MODE = True  # Set to True to show pipeline status and expanded data sections
 
 
 # --- Functions (some cached for performance, some not) ---
@@ -43,17 +43,17 @@ def get_expanded_keywords_cached(loaded_keywords: list[str]) -> list[str]:
     Expands keywords. Cached, as expansion depends only on loaded keywords.
     Cache busts if 'loaded_keywords' list changes.
     """
-    return expand_keywords_batch(loaded_keywords)
+    return expand_keywords_batch(loaded_keywords, n=2)
 
 
 @st.cache_data(show_spinner=False)
 def get_enriched_data_cached(expanded_keywords: list[str], current_period_id: str):
     """
-    Generates fake trend data. Cached, but cache busts if 'expanded_keywords'
+    Generates trend data. Cached, but cache busts if 'expanded_keywords'
     change OR if the 'current_period_id' (current day/month/year) changes.
     """
-    provider = FakeProvider(expanded_keywords)
-    return provider.generate_fake_output()
+    provider = GoogleAdsProvider(expanded_keywords)
+    return provider.generate_output()
 
 
 @st.cache_data(show_spinner=False)
@@ -199,18 +199,15 @@ def run():
     # --- Keyword Management Section ---
     display_section_title("Keyword Management")
 
-    # Initialize session state for keyword text content on first run
     if "active_keywords_for_analysis" not in st.session_state:
         default_keywords_list = load_keywords_from_txt(KEYWORDS_FILE_PATH)
         st.session_state.active_keywords_for_analysis = "\n".join(default_keywords_list)
-        # Also initialize the editable text area content
         st.session_state.editable_keywords_text = st.session_state.active_keywords_for_analysis
 
     with st.expander("Configure Keywords", expanded=True):
         st.markdown("Enter keywords below, one per line. These will be used for analysis.")
-        st.markdown("---") # Visual separator
+        st.markdown("---")
 
-        # Text area for manual input/display of current keywords
         edited_keywords_raw = st.text_area(
             "Keywords List:",
             value=st.session_state.editable_keywords_text,
@@ -219,27 +216,20 @@ def run():
             key="keywords_text_input_raw"
         )
 
-        # Update the temporary editable state if the text area content changes
         if edited_keywords_raw != st.session_state.editable_keywords_text:
             st.session_state.editable_keywords_text = edited_keywords_raw
 
-        # --- Buttons for Apply Keywords (PURE CSS with Flexbox) ---
-        # Wrap button in a custom div for Flexbox control
         st.markdown('<div class="button-container-keywords">', unsafe_allow_html=True)
 
-        # "Apply Keywords" button
         if st.button("Apply Keywords", key="apply_keywords_button"):
-            # Only update active_keywords_for_analysis if there's a change
             if st.session_state.editable_keywords_text != st.session_state.active_keywords_for_analysis:
                 st.session_state.active_keywords_for_analysis = st.session_state.editable_keywords_text
-                st.rerun() # Trigger a full rerun to update the pipeline
+                st.rerun()
 
-        st.markdown('</div>', unsafe_allow_html=True) # Close the custom div
+        st.markdown('</div>', unsafe_allow_html=True)
 
+        st.markdown("---")
 
-        st.markdown("---") # Visual separator
-
-        # File uploader
         uploaded_file = st.file_uploader(
             "Or upload a keywords.txt file:",
             type=["txt"],
@@ -249,35 +239,28 @@ def run():
 
         if uploaded_file is not None:
             try:
-                # Read and decode the file content
                 file_contents = uploaded_file.read().decode("utf-8")
-                # Update both the editable text area and the active keywords for analysis
                 if file_contents != st.session_state.active_keywords_for_analysis or \
-                   file_contents != st.session_state.editable_keywords_text:
+                        file_contents != st.session_state.editable_keywords_text:
                     st.session_state.editable_keywords_text = file_contents
                     st.session_state.active_keywords_for_analysis = file_contents
-                    st.rerun() # Trigger a full rerun
+                    st.rerun()
 
             except UnicodeDecodeError:
                 st.error("Error: Could not decode the file. Please ensure it is a plain text file (UTF-8 encoded).")
             except Exception as e:
                 st.error(f"An unexpected error occurred while reading the file: {e}")
 
-
-    # Determine the actual keywords list from the active session state content
     loaded_keywords = [
         kw.strip() for kw in st.session_state.active_keywords_for_analysis.split('\n') if kw.strip()
     ]
 
-    # Handle case where no keywords are provided at all
     if not loaded_keywords:
         st.warning("No keywords provided. Please enter keywords above or upload a file to proceed.")
         st.stop()
 
+    st.markdown("<div class='page-divider'></div>", unsafe_allow_html=True)
 
-    st.markdown("<div class='page-divider'></div>", unsafe_allow_html=True) # Visual separator
-
-    # Get current day-month-year string for cache busting
     current_day_month_year_str = datetime.datetime.now().strftime("%Y-%m-%d")
 
     # --- Data Pipeline Execution ---
@@ -290,7 +273,6 @@ def run():
     with st.spinner("Analyzing trends..."):
         analysis_results_for_table = get_analysis_results_cached(enriched_data)
 
-
     # --- Debugging/Pipeline Status Sections (only shown in DEBUG_MODE) ---
     if DEBUG_MODE:
         st.subheader("Debugging & Pipeline Status")
@@ -299,47 +281,72 @@ def run():
                 st.write(loaded_keywords)
             else:
                 st.info("No keywords loaded from input.")
-        st.markdown("---") # Visual separator
+        st.markdown("---")
 
         with st.expander("Show Expanded Keywords", expanded=True):
             if expanded_keywords:
                 st.write(expanded_keywords)
             else:
                 st.info("No keywords to expand.")
-        st.markdown("---") # Visual separator
+        st.markdown("---")
 
-        with st.expander("Show Generated Trend Data (from FakeProvider)", expanded=True):
+        with st.expander("Show Generated Trend Data", expanded=True):
             if enriched_data:
                 st.write(enriched_data[:5])
                 if len(enriched_data) > 5:
                     st.info(f"Showing first 5 entries out of {len(enriched_data)} generated data points.")
             else:
-                st.info("No keywords to generate fake data for.")
-        st.markdown("---") # Visual separator
+                st.info("No keywords to generate data for.")
+        st.markdown("---")
 
-        with st.expander("Show Analysis Results (from TrendAnalyzer)", expanded=True):
+        with st.expander("Show Analysis Results", expanded=True):
             if analysis_results_for_table:
                 st.write(analysis_results_for_table[:5])
                 if len(analysis_results_for_table) > 5:
                     st.info(f"Showing first 5 entries out of {len(analysis_results_for_table)} analyzed results.")
             else:
                 st.info("No data to analyze.")
-        st.markdown("---") # Visual separator
-
+        st.markdown("---")
 
     # --- DYNAMICALLY POPULATING THE TABLE WITH ANALYSIS RESULTS ---
     display_section_title("Tracked Categories & Keywords")
 
     table_data = []
-    available_keywords = [] # To store keywords for separate checkbox selection
+    available_keywords = []
+
+    # Get the current month to average over
+    current_month_index = datetime.datetime.now().month - 1
+    years_to_average = [2022, 2023, 2024]
 
     for item in analysis_results_for_table:
         keyword = item.get('keyword', 'N/A')
-        available_keywords.append(keyword) # Populate the list for checkboxes
+        available_keywords.append(keyword)
 
-        current_volume = item.get('current', 0)
         pct_change_month = item.get('pct_change_month')
         pct_change_3mo = item.get('pct_change_3mo')
+
+        # --- Calculate Expected Monthly Volume ---
+        expected_volume = 0
+        valid_years_count = 0
+
+        # Find the full trend history from enriched_data
+        full_trend_history = next(
+            (enriched_item.get('trend_history') for enriched_item in enriched_data if
+             enriched_item.get('keyword') == keyword),
+            None
+        )
+
+        if full_trend_history:
+            for year in years_to_average:
+                if year in full_trend_history and len(full_trend_history[year]) > current_month_index:
+                    expected_volume += full_trend_history[year][current_month_index]
+                    valid_years_count += 1
+
+        if valid_years_count > 0:
+            expected_volume = round(expected_volume / valid_years_count)
+        else:
+            expected_volume = 0
+        # --- End of calculation ---
 
         trend_arrow_html = ""
         if pct_change_month is not None:
@@ -352,7 +359,7 @@ def run():
 
         table_data.append({
             "CATEGORY/KEYWORD": keyword,
-            "CURRENT VOLUME": f"{current_volume:,}",
+            "EXPECTED MONTHLY VOLUME": f"{expected_volume:,}",
             "% CHANGE (30 DAYS)": format_percentage(pct_change_month) if pct_change_month is not None else "",
             " % CHANGE (90 DAYS)": format_percentage(pct_change_3mo) if pct_change_3mo is not None else "",
             "TREND": trend_arrow_html
@@ -360,7 +367,6 @@ def run():
 
     df = pd.DataFrame(table_data)
     if not df.empty:
-        # WRAP THE TABLE IN A RESPONSIVE DIV
         st.markdown(
             f"""
             <div class="table-responsive-wrapper">
@@ -377,12 +383,10 @@ def run():
 
     selected_keywords_for_graph = []
     if available_keywords:
-        # Default to selecting the first keyword if none are selected yet
         for i, kw in enumerate(available_keywords):
             if f"checkbox_{kw.replace(' ', '_')}" not in st.session_state:
                 st.session_state[f"checkbox_{kw.replace(' ', '_')}"] = (i == 0)
 
-        # Using st.columns here is fine as it's for the checkboxes
         cols = st.columns(4)
         for i, kw in enumerate(available_keywords):
             with cols[i % 4]:
@@ -391,55 +395,62 @@ def run():
     else:
         st.info("No keywords available to select for the graph.")
 
-
     # --- TREND HISTORY GRAPH ---
     display_section_title("Trend History (Selected Categories)")
 
-    current_year_int = datetime.datetime.now().year
-    current_month_0_indexed = datetime.datetime.now().month - 1
-    month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-
-    # Filter month names to display up to the current month
-    months_to_display = month_names[:current_month_0_indexed + 1]
-
     if selected_keywords_for_graph and enriched_data:
         dfs_to_concat = []
+        month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
 
         for keyword_to_plot in selected_keywords_for_graph:
-            selected_trend_history = None
-            for item in enriched_data:
-                if item.get('keyword') == keyword_to_plot:
-                    selected_trend_history = item.get('trend_history')
-                    break
+            selected_trend_history = next(
+                (item.get('trend_history') for item in enriched_data if item.get('keyword') == keyword_to_plot), None)
 
-            if selected_trend_history and current_year_int in selected_trend_history:
-                monthly_volumes_this_year = selected_trend_history[current_year_int]
+            if selected_trend_history:
+                years_to_average = [2022, 2023, 2024]
+                monthly_averages = [0] * 12
+                valid_years_count = 0
 
-                kw_df = pd.DataFrame({
-                    "Month": months_to_display,
-                    keyword_to_plot: monthly_volumes_this_year[:len(months_to_display)]
-                })
-                kw_df['Month'] = pd.Categorical(kw_df['Month'], categories=month_names, ordered=True)
-                kw_df = kw_df.set_index("Month")
-                dfs_to_concat.append(kw_df)
+                for year in years_to_average:
+                    if year in selected_trend_history:
+                        for month_index, volume in enumerate(selected_trend_history[year]):
+                            monthly_averages[month_index] += volume
+                        valid_years_count += 1
+
+                if valid_years_count > 0:
+                    monthly_averages = [round(v / valid_years_count) for v in monthly_averages]
+
+                    kw_df = pd.DataFrame({
+                        "Month": month_names,
+                        keyword_to_plot: monthly_averages
+                    })
+                    kw_df = kw_df.set_index("Month")
+                    dfs_to_concat.append(kw_df)
             else:
-                st.warning(
-                    f"No trend history available for {current_year_int} for keyword: '{keyword_to_plot}'. Skipping this keyword in the graph.")
+                st.warning(f"No trend history found for '{keyword_to_plot}'.")
 
         if dfs_to_concat:
             final_graph_df = pd.concat(dfs_to_concat, axis=1)
+            final_graph_df.index.name = 'Month'
+            final_graph_df.reset_index(inplace=True)
 
-            numeric_columns = final_graph_df.select_dtypes(include=[np.number]).columns
+            df_long = pd.melt(
+                final_graph_df,
+                id_vars='Month',
+                var_name='Keyword',
+                value_name='Average Monthly Volume'
+            )
 
-            if not numeric_columns.empty:
-                st.line_chart(final_graph_df[numeric_columns])
-                st.write(
-                    f"Displaying trends for: **{', '.join(selected_keywords_for_graph)}** for {current_year_int} (up to {month_names[current_month_0_indexed]})")
-            else:
-                st.info(
-                    f"No valid search volume data found for selected keywords for {current_year_int}. Please check the data source.")
+            chart = alt.Chart(df_long).mark_line(point=True).encode(
+                x=alt.X('Month:N', sort=month_names, title='Month'),
+                y=alt.Y('Average Monthly Volume:Q', title='Average Search Volume'),
+                color=alt.Color('Keyword:N', title='Keyword')
+            ).properties(
+                title='Average Monthly Search Volume Trends (2022-2024)'
+            )
+            st.altair_chart(chart, use_container_width=True)
         else:
-            st.info("No selected keywords have complete trend data to display for the current year.")
+            st.info("No selected keywords have complete trend data to display.")
 
     elif not selected_keywords_for_graph:
         st.info("Please select at least one keyword above to see its trend history.")
@@ -479,6 +490,7 @@ def run():
     with button_col:
         if st.button("Save Settings"):
             st.toast("Settings saved successfully!", icon="✅")
+
 
 if __name__ == "__main__":
     run()

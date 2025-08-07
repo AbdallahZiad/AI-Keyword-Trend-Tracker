@@ -7,7 +7,7 @@ from openai import OpenAI
 client = OpenAI(api_key=settings.OPENAI_API_KEY)
 
 
-def expand_keyword(keyword: str, n: int = 5, model="gpt-3.5-turbo") -> List[str]:
+def expand_keyword(keyword: str, n: int = 2, model="gpt-3.5-turbo") -> List[str]:
     """
     Use OpenAI GPT to generate N similar keywords to a given keyword.
     """
@@ -43,7 +43,7 @@ def expand_keyword(keyword: str, n: int = 5, model="gpt-3.5-turbo") -> List[str]
 
 def expand_keywords_batch(
     keywords: List[str],
-    n: int = 5,
+    n: int = 2,
     delay: float = 1.1,
     model: str = "gpt-3.5-turbo"
 ) -> List[Dict[str, List[str]]]:
@@ -81,6 +81,6 @@ if __name__ == "__main__":
         "ai marketing",
         "budget gaming laptop"
     ]
-    expanded = expand_keywords_batch(sample_keywords, n=5)
+    expanded = expand_keywords_batch(sample_keywords, n=2)
     print(json.dumps(expanded, indent=2))
     save_expanded_keywords_to_file(expanded, "data/expanded_keywords.json")
