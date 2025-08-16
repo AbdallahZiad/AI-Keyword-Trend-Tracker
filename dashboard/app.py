@@ -13,7 +13,9 @@ sys.path.insert(0, str(project_root))
 # Imports from core
 from core.keyword_expander import expand_keywords_batch
 from core.data_provider.google_ads_provider import GoogleAdsProvider
+from core.data_provider.fake_provider import FakeProvider
 from core.trend_analyzer import TrendAnalyzer
+from core.redis_settings import get_all_settings, save_all_settings, get_keywords, save_keywords
 
 KEYWORDS_FILE_PATH = project_root / "data" / "keywords.txt"
 
@@ -119,12 +121,6 @@ st.markdown(
     div[data-testid="stNumberInput"] + div[data-testid="stMarkdownContainer"] p {
         font-size: 0.78em !important; color: #888888 !important; margin-top: 0.4em !important; line-height: 1.3 !important;
     }
-    .stMarkdown div[style*="height: 250px"] {
-        background-color: #F8F8F8 !important; border: 1px solid #E0E0E0 !important; border-radius: 8px !important;
-        padding: 20px !important; margin-bottom: 3rem !important; text-align: center !important;
-        color: #777777 !important; font-style: italic; height: 250px !important;
-        display: flex !important; align-items: center !important; justify-content: center !important;
-    }
     .stButton > button {
         border-radius: 5px !important; padding: 10px 20px !important; font-weight: 600 !important;
         border: none !important; box-shadow: 0 2px 5px rgba(0,0,0,0.1) !important;
@@ -163,8 +159,16 @@ def run():
     # --- Keyword Management Section ---
     display_section_title("Keyword Management")
 
+    # Load keywords to be tracked from Redis on initial page load
+    tracked_keywords = get_keywords()
+
     if "active_keywords_for_analysis" not in st.session_state:
-        default_keywords_list = load_keywords_from_txt(KEYWORDS_FILE_PATH)
+        # Use keywords from Redis if they exist, otherwise use the default file
+        if tracked_keywords:
+            default_keywords_list = tracked_keywords
+        else:
+            default_keywords_list = load_keywords_from_txt(KEYWORDS_FILE_PATH)
+
         st.session_state.active_keywords_for_analysis = "\n".join(default_keywords_list)
         st.session_state.editable_keywords_text = st.session_state.active_keywords_for_analysis
 
@@ -183,12 +187,25 @@ def run():
         if edited_keywords_raw != st.session_state.editable_keywords_text:
             st.session_state.editable_keywords_text = edited_keywords_raw
 
-        st.markdown('<div class="button-container-keywords">', unsafe_allow_html=True)
+        # Refactored button placement to be on separate lines
         if st.button("Apply Keywords", key="apply_keywords_button"):
             if st.session_state.editable_keywords_text != st.session_state.active_keywords_for_analysis:
                 st.session_state.active_keywords_for_analysis = st.session_state.editable_keywords_text
                 st.rerun()
-        st.markdown('</div>', unsafe_allow_html=True)
+
+        st.markdown("")  # Adds a small vertical space
+
+        if st.button("Save & Track Keywords", key="track_keywords_button"):
+            # First, apply the keywords to the session state
+            st.session_state.active_keywords_for_analysis = st.session_state.editable_keywords_text
+            keywords_to_save = [kw.strip() for kw in st.session_state.editable_keywords_text.split('\n') if kw.strip()]
+
+            # Then, save the keywords to Redis
+            if save_keywords(keywords_to_save):
+                st.toast("Keywords saved for tracking!", icon="✅")
+                st.rerun()
+            else:
+                st.error("Failed to save keywords to Redis.")
 
         st.markdown("---")
 
@@ -393,21 +410,49 @@ def run():
 
     # --- Settings ---
     display_section_title("Settings & Configuration")
-    col1, col2 = st.columns(2)
+
+    # Load settings from Redis on initial page load
+    if 'settings' not in st.session_state:
+        st.session_state.settings = get_all_settings()
+
+    col1, col2, col3 = st.columns(3)
     with col1:
         st.subheader("Notification Threshold (% Change):")
-        st.number_input("Hidden label for notification threshold.", min_value=0, max_value=100, value=10,
-                        label_visibility="collapsed", key="notification_threshold_input")
+        notification_threshold = st.number_input(
+            "Hidden label for notification threshold.",
+            min_value=0, max_value=100,
+            value=st.session_state.settings.get('notification_threshold', 10),
+            label_visibility="collapsed",
+            key="notification_threshold_input"
+        )
         st.markdown("Notify if search volume changes by this percentage.")
     with col2:
+        st.subheader("Minimum Monthly Hits:")
+        min_hits = st.number_input(
+            "Hidden label for minimum monthly hits.",
+            min_value=0,
+            value=st.session_state.settings.get('min_hits_threshold', 100),
+            label_visibility="collapsed",
+            key="min_hits_input"
+        )
+        st.markdown("Notify only if expected monthly volume is above this limit.")
+    with col3:
         st.subheader("Slack Webhook URL:")
-        st.text_input("Hidden label for Slack webhook URL.", value="", placeholder="Enter Slack webhook URL",
-                      label_visibility="collapsed", key="slack_webhook_url_input")
+        slack_webhook = st.text_input(
+            "Hidden label for Slack webhook URL.",
+            value=st.session_state.settings.get('slack_webhook_url', ''),
+            placeholder="Enter Slack webhook URL",
+            label_visibility="collapsed",
+            key="slack_webhook_url_input"
+        )
         st.markdown("Notifications will be sent to this Slack channel.")
+
     button_col, _ = st.columns([0.5, 2])
     with button_col:
         if st.button("Save Settings"):
-            st.toast("Settings saved successfully!", icon="✅")
+            if save_all_settings(notification_threshold, min_hits, slack_webhook):
+                st.session_state.settings = get_all_settings()
+                st.toast("Settings saved successfully!", icon="✅")
 
 
 if __name__ == "__main__":

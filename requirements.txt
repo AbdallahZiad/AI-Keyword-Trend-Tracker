@@ -2,3 +2,4 @@ openai
 pandas
 slack_sdk
 google-ads==27.0.0
+redis
