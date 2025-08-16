@@ -1,0 +1,30 @@
+name: Run Monthly Notifier
+
+on:
+  schedule:
+    - cron: '0 0 1 * *' # Runs at 00:00 on the 1st of every month
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v2
+
+      - name: Create secrets.toml from secret
+        run: |
+          cat <<EOF > .streamlit/secrets.toml
+          ${{ secrets.STREAMLIT_SECRETS_TOML }}
+          EOF
+
+      - name: Set up Python
+        uses: actions/setup-python@v2
+        with:
+          python-version: '3.x'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run the monthly script
+        run: python monthly_notifier.py
