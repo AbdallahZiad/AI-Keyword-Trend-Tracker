@@ -24,11 +24,15 @@ class GoogleAdsProvider(KeywordDataProvider):
     A data provider that fetches real keyword trend data from the Google Ads API.
     """
 
-    def __init__(self, data: List[Dict[str, Any]]):
+    def __init__(self, data: List[Dict[str, Any]],
+                 language_code: str = "1000",
+                 geo_target_id: str = "2840"):
         self.data = data
         self.client = self._get_google_ads_client()
         self.keyword_plan_service = self.client.get_service("KeywordPlanIdeaService")
         self.customer_id = settings.GOOGLE_CUSTOMER_ID
+        self.language_code = language_code
+        self.geo_target_id = geo_target_id
 
     def _get_google_ads_client(self) -> GoogleAdsClient:
         """
@@ -123,8 +127,9 @@ class GoogleAdsProvider(KeywordDataProvider):
             self.client.enums.MonthOfYearEnum.DECEMBER: 11,
         }
 
-        request.language = "languageConstants/1000"
-        request.geo_target_constants.append("geoTargetConstants/2840")
+        # Set language and location dynamically
+        request.language = f"languageConstants/{self.language_code}"
+        request.geo_target_constants.append(f"geoTargetConstants/{self.geo_target_id}")
 
         historical_metrics_options = self.client.get_type("HistoricalMetricsOptions")
 

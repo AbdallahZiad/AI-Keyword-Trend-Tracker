@@ -16,6 +16,7 @@ from core.data_provider.google_ads_provider import GoogleAdsProvider
 from core.data_provider.fake_provider import FakeProvider
 from core.trend_analyzer import TrendAnalyzer
 from core.redis_settings import get_all_settings, save_all_settings, get_keywords, save_keywords
+from core.data_provider.google_ads_mappings import GEO_TARGET_MAP, LANGUAGE_MAP
 
 KEYWORDS_FILE_PATH = project_root / "data" / "keywords.txt"
 
@@ -36,9 +37,9 @@ def get_expanded_keywords_cached(loaded_keywords: list[str]) -> list[str]:
 
 
 @st.cache_data(show_spinner=False)
-def get_enriched_data_cached(expanded_keywords: list[str], current_period_id: str):
+def get_enriched_data_cached(expanded_keywords: list[str], language_code: str, geo_target_id: str):
     """Generates trend data. Cached."""
-    provider = GoogleAdsProvider(expanded_keywords)
+    provider = GoogleAdsProvider(expanded_keywords, language_code=language_code, geo_target_id=geo_target_id)
     return provider.generate_output()
 
 
@@ -130,7 +131,7 @@ st.markdown(
     .stButton > button:hover {
         background-color: #45a049 !important; box-shadow: 0 4px 8px rgba(0,0,0,0.15) !important;
     }
-    div[data-testid="stButton"] > button:hover > div > div > span { color: white !important; }
+    div[data-testid="stButton"] > button > div > div > span { color: white !important; }
     .stButton > button > div > div > span {
         white-space: nowrap !important;
     }
@@ -237,13 +238,45 @@ def run():
 
     st.markdown("<div class='page-divider'></div>", unsafe_allow_html=True)
 
+    # --- Data Source Section ---
+    display_section_title("Data Source Settings")
+
+    col_lang, col_geo = st.columns(2)
+
+    with col_lang:
+        language_options = sorted(list(LANGUAGE_MAP.keys()))
+        default_lang_index = language_options.index("English")
+
+        selected_language = st.selectbox(
+            "Select Language:",
+            options=language_options,
+            index=default_lang_index,
+            help="Choose the language for the keyword data."
+        )
+        st.session_state.selected_language_code = LANGUAGE_MAP[selected_language]
+
+    with col_geo:
+        country_options = sorted(list(GEO_TARGET_MAP.keys()))
+        default_country_index = country_options.index("United States")
+
+        selected_country = st.selectbox(
+            "Select Country/Region:",
+            options=country_options,
+            index=default_country_index,
+            help="Choose the country or region for the keyword data."
+        )
+        st.session_state.selected_geo_target_id = GEO_TARGET_MAP[selected_country]
+
+    st.markdown("<div class='page-divider'></div>", unsafe_allow_html=True)
+
     current_day_month_year_str = datetime.datetime.now().strftime("%Y-%m-%d")
 
     with st.spinner("Expanding keywords..."):
         expanded_keywords = get_expanded_keywords_cached(loaded_keywords)
 
     with st.spinner("Generating trend data..."):
-        enriched_data = get_enriched_data_cached(expanded_keywords, current_day_month_year_str)
+        enriched_data = get_enriched_data_cached(expanded_keywords, st.session_state.selected_language_code,
+                                                 st.session_state.selected_geo_target_id)
 
     with st.spinner("Analyzing trends..."):
         analysis_results_for_table = get_analysis_results_cached(enriched_data)
