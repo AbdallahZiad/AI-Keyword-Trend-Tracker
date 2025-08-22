@@ -272,10 +272,10 @@ def run():
     current_day_month_year_str = datetime.datetime.now().strftime("%Y-%m-%d")
 
     with st.spinner("Expanding keywords..."):
-        expanded_keywords = get_expanded_keywords_cached(loaded_keywords)
+        expanded_keywords_data = get_expanded_keywords_cached(loaded_keywords)
 
     with st.spinner("Generating trend data..."):
-        enriched_data = get_enriched_data_cached(expanded_keywords, st.session_state.selected_language_code,
+        enriched_data = get_enriched_data_cached(expanded_keywords_data, st.session_state.selected_language_code,
                                                  st.session_state.selected_geo_target_id)
 
     with st.spinner("Analyzing trends..."):
@@ -297,6 +297,9 @@ def run():
             label_visibility="collapsed",
             help="Select a sorting order for the table below."
         )
+
+    # Map for easy lookup of similar keywords
+    keyword_map = {item["keyword"]: item.get("similar_keywords", []) for item in enriched_data}
 
     table_data_raw = []
     available_keywords = []
@@ -358,8 +361,15 @@ def run():
             else:
                 trend_arrow_html = "<span>―</span>"
 
+        # Get similar keywords and format them for the tooltip
+        similar_kws = keyword_map.get(item['keyword'], [])
+        tooltip_text = f"Expanded Keywords: " + ", ".join(similar_kws) if similar_kws else "No expanded keywords."
+
+        # Create a span with the title attribute for the tooltip
+        keyword_with_tooltip = f"<span title='{tooltip_text}'>{item['keyword']}</span>"
+
         table_data_display.append({
-            "CATEGORY/KEYWORD": item['keyword'],
+            "CATEGORY/KEYWORD": keyword_with_tooltip,
             "EXPECTED MONTHLY VOLUME": f"{item['expected_volume']:,}",
             "% CHANGE (30 DAYS)": format_percentage(pct_change_month) if pct_change_month is not None else "",
             " % CHANGE (90 DAYS)": format_percentage(item['pct_change_3mo']) if item[
