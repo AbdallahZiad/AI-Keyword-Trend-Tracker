@@ -70,7 +70,8 @@ class GoogleAdsProvider(KeywordDataProvider):
                 last_exception = ex
                 is_rate_limit_error = False
                 for error in ex.failure.errors:
-                    if error.error_code.HasField("quota_error") and \
+                    # Correct and robust way to check for quota error across different library versions
+                    if hasattr(error.error_code, 'quota_error') and \
                             error.error_code.quota_error == self.client.enums.QuotaErrorEnum.RESOURCE_TEMPORARILY_EXHAUSTED:
                         is_rate_limit_error = True
                         break
@@ -204,17 +205,19 @@ class GoogleAdsProvider(KeywordDataProvider):
 
     def get_campaign_data(self) -> List[Dict[str, Any]]:
         """
-        Fetches all campaigns and their ad groups from the Google Ads API,
-        including paused ones, and sorts them with live campaigns first.
+        Fetches all campaigns and their ad groups and labels using separate queries.
+        This approach is robust and avoids GAQL join errors.
 
         Returns:
             A list of dictionaries, where each dictionary represents a campaign
-            and its associated ad groups.
+            and its associated ad groups and labels.
         """
         campaigns_dict = {}
         try:
             ga_service = self.client.get_service("GoogleAdsService")
-            query = """
+
+            # Query 1: Get campaign data along with ad groups
+            ad_group_query = """
                 SELECT
                     campaign.id,
                     campaign.name,
@@ -226,28 +229,86 @@ class GoogleAdsProvider(KeywordDataProvider):
                     campaign.name
             """
 
-            response = self._retry_on_rate_limit(ga_service.search_stream, customer_id=self.customer_id, query=query)
+            ad_group_response = self._retry_on_rate_limit(ga_service.search_stream, customer_id=self.customer_id,
+                                                          query=ad_group_query)
 
-            for batch in response:
+            for batch in ad_group_response:
                 for row in batch.results:
                     campaign_id = row.campaign.id
-                    campaign_name = row.campaign.name
-                    campaign_status = self.client.enums.CampaignStatusEnum(row.campaign.status).name
                     ad_group_id = row.ad_group.id
                     ad_group_name = row.ad_group.name
+                    campaign_name = row.campaign.name
+                    campaign_status = self.client.enums.CampaignStatusEnum(row.campaign.status).name
 
                     if campaign_id not in campaigns_dict:
                         campaigns_dict[campaign_id] = {
                             "campaign_id": campaign_id,
                             "campaign_name": campaign_name,
                             "campaign_status": campaign_status,
-                            "ad_groups": []
+                            "ad_groups": [],
+                            "labels": []
                         }
 
-                    campaigns_dict[campaign_id]["ad_groups"].append({
-                        "ad_group_id": ad_group_id,
-                        "ad_group_name": ad_group_name
-                    })
+                    if ad_group_id and ad_group_id not in [ag['ad_group_id'] for ag in
+                                                           campaigns_dict[campaign_id]["ad_groups"]]:
+                        campaigns_dict[campaign_id]["ad_groups"].append({
+                            "ad_group_id": ad_group_id,
+                            "ad_group_name": ad_group_name
+                        })
+
+            # Query 2: Get all campaign label resource names
+            # This query must be separate as the FROM clause is different.
+            campaign_label_query = """
+                SELECT
+                    campaign.id,
+                    campaign_label.label
+                FROM campaign_label
+                ORDER BY
+                    campaign.id
+            """
+
+            label_resource_names = {}
+            campaign_response = self._retry_on_rate_limit(ga_service.search_stream, customer_id=self.customer_id,
+                                                          query=campaign_label_query)
+
+            for batch in campaign_response:
+                for row in batch.results:
+                    campaign_id = row.campaign.id
+                    label_resource_name = row.campaign_label.label
+
+                    if campaign_id not in label_resource_names:
+                        label_resource_names[campaign_id] = []
+                    label_resource_names[campaign_id].append(label_resource_name)
+
+            # Query 3: Fetch the label names based on their resource names
+            # This is the crucial step to get the actual label names.
+            if label_resource_names:
+                all_label_resources = [res_name for campaign_labels in label_resource_names.values() for res_name in
+                                       campaign_labels]
+
+                # Split large lists into chunks for the IN clause
+                chunk_size = 1000
+                for i in range(0, len(all_label_resources), chunk_size):
+                    chunk = all_label_resources[i:i + chunk_size]
+                    label_query = f"""
+                        SELECT
+                            label.resource_name,
+                            label.name
+                        FROM label
+                        WHERE label.resource_name IN ('{"','".join(chunk)}')
+                    """
+                    label_response = self._retry_on_rate_limit(ga_service.search_stream, customer_id=self.customer_id,
+                                                               query=label_query)
+
+                    label_names_map = {row.label.resource_name: row.label.name for batch in label_response for row in
+                                       batch.results}
+
+                    # Merge labels into the main dictionary
+                    for campaign_id, res_names in label_resource_names.items():
+                        if campaign_id in campaigns_dict:
+                            for res_name in res_names:
+                                if res_name in label_names_map:
+                                    campaigns_dict[campaign_id]["labels"].append(label_names_map[res_name])
 
             # Sort campaigns: live campaigns (ENABLED) first, then all others
             campaign_list = sorted(
@@ -263,3 +324,82 @@ class GoogleAdsProvider(KeywordDataProvider):
             return []
 
         return campaign_list
+
+    def set_campaign_label(self, campaign_id: str, label_name: str, action: str):
+        """
+        Creates or retrieves a label and applies or removes it from a campaign.
+
+        Args:
+            campaign_id (str): The ID of the campaign to label.
+            label_name (str): The name of the label to apply or remove.
+            action (str): The action to perform, 'add' or 'remove'.
+        """
+        # 1. Get or create the label
+        label_service = self.client.get_service("LabelService")
+        label_resource_name = None
+
+        try:
+            get_label_query = f"""
+                SELECT
+                    label.resource_name
+                FROM label
+                WHERE
+                    label.name = '{label_name}'
+                LIMIT 1
+            """
+            response = self._retry_on_rate_limit(
+                self.client.get_service("GoogleAdsService").search,
+                customer_id=self.customer_id,
+                query=get_label_query
+            )
+
+            if response.results:
+                label_resource_name = response.results[0].label.resource_name
+            else:
+                # If label doesn't exist, create it
+                label_operation = self.client.get_type("LabelOperation")
+                label = label_operation.create
+                label.name = label_name
+                label_response = self._retry_on_rate_limit(
+                    label_service.mutate_labels,
+                    customer_id=self.customer_id,
+                    operations=[label_operation]
+                )
+                label_resource_name = label_response.results[0].resource_name
+
+        except GoogleAdsException as ex:
+            print(f"Error getting/creating label: {ex}")
+            return False
+
+        if not label_resource_name:
+            print("Failed to get or create label.")
+            return False
+
+        # 2. Apply or remove the label from the campaign
+        campaign_label_service = self.client.get_service("CampaignLabelService")
+        operation = self.client.get_type("CampaignLabelOperation")
+
+        # Determine the correct operation type based on the action
+        if action == 'add':
+            campaign_label = operation.create
+            campaign_label.campaign = f"customers/{self.customer_id}/campaigns/{campaign_id}"
+            campaign_label.label = label_resource_name
+        elif action == 'remove':
+            # For removal, we need the resource name of the campaign_label entity itself as a string
+            campaign_label_resource_name = f"customers/{self.customer_id}/campaignLabels/{campaign_id}~{label_resource_name.split('/')[-1]}"
+            operation.remove = campaign_label_resource_name
+        else:
+            print("Invalid action. Must be 'add' or 'remove'.")
+            return False
+
+        try:
+            self._retry_on_rate_limit(
+                campaign_label_service.mutate_campaign_labels,
+                customer_id=self.customer_id,
+                operations=[operation]
+            )
+            print(f"Successfully '{action}'ed label '{label_name}' for campaign '{campaign_id}'.")
+            return True
+        except GoogleAdsException as ex:
+            print(f"Error '{action}'ing label for campaign: {ex}")
+            return False

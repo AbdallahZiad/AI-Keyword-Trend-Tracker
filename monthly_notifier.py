@@ -14,7 +14,7 @@ from core.keyword_expander import expand_keywords_batch
 from core.data_provider.google_ads_provider import GoogleAdsProvider
 from core.data_provider.fake_provider import FakeProvider
 from core.trend_analyzer import TrendAnalyzer
-from core.redis_settings import get_keywords, get_all_settings
+from core.redis_settings import get_keywords_enriched, get_all_settings
 from core.slack_notifier import send_alerts_to_slack # Import the new function
 
 
@@ -50,10 +50,12 @@ def run_analysis_pipeline():
     print("Starting analysis pipeline...")
 
     # 1. Get keywords and settings from Redis
-    keywords_to_track = get_keywords()
-    if not keywords_to_track:
+    keywords_enriched = get_keywords_enriched()
+    if not keywords_enriched:
         print("No keywords found in Redis. Exiting.")
         return [], []
+
+    keywords_to_track = [kw['keyword'] for kw in keywords_enriched]
 
     print(f"Retrieved {len(keywords_to_track)} keywords from Redis.")
 
@@ -124,6 +126,44 @@ def extract_alerts_from_analysis(
 
     return alerts
 
+def update_campaign_labels(alerts: List[Dict[str, Any]], keywords_enriched: List[Dict[str, Any]]):
+    """
+    Resets 'Trending Keyword' labels on all campaigns and then applies
+    it to campaigns associated with keywords that triggered an alert.
+    """
+    print("\n" + "=" * 50)
+    print("--- UPDATING GOOGLE ADS CAMPAIGN LABELS ---")
+    print("=" * 50)
+
+    # Instantiate the provider
+    provider = GoogleAdsProvider([])
+    label_name = "Trending Keyword"
+
+    # Step 1: Get all campaigns to find which ones have the label
+    all_campaigns = provider.get_campaign_data()
+    campaign_ids_to_remove_label = [
+        c['campaign_id'] for c in all_campaigns if label_name in c.get('labels', [])
+    ]
+
+    # Step 2: Remove the label from all campaigns that currently have it
+    print(f"Removing '{label_name}' label from {len(campaign_ids_to_remove_label)} campaign(s)...")
+    for campaign_id in campaign_ids_to_remove_label:
+        provider.set_campaign_label(campaign_id, label_name, "remove")
+
+    # Step 3: Find the campaign IDs for the keywords that triggered an alert
+    alert_keywords = {alert['keyword'] for alert in alerts}
+    campaign_ids_to_add_label = set()
+    for kw_data in keywords_enriched:
+        if kw_data['keyword'] in alert_keywords and kw_data.get('campaign_id'):
+            campaign_ids_to_add_label.add(kw_data['campaign_id'])
+
+    # Step 4: Add the label to the campaigns that qualify
+    print(f"Adding '{label_name}' label to {len(campaign_ids_to_add_label)} campaign(s)...")
+    for campaign_id in campaign_ids_to_add_label:
+        provider.set_campaign_label(campaign_id, label_name, "add")
+
+    print("Campaign labeling process complete.")
+
 
 if __name__ == "__main__":
     DRY_RUN = False  # Set False to send actual Slack messages
@@ -134,7 +174,6 @@ if __name__ == "__main__":
     notification_threshold = settings.get('notification_threshold', 10)
     min_hits_threshold = settings.get('min_hits_threshold', 0)
     slack_webhook_url = settings.get('slack_webhook_url', "")
-
 
     print("\n" + "=" * 50)
     print("--- FINAL ANALYSIS OUTPUT (INJECTED AVERAGE) ---")
@@ -160,5 +199,7 @@ if __name__ == "__main__":
         print("--- SENDING ALERTS TO SLACK ---")
         print("=" * 50)
         send_alerts_to_slack(alerts_to_send, slack_webhook_url, DRY_RUN)
+        # Call the new function to update labels
+        update_campaign_labels(alerts_to_send, get_keywords_enriched())
     else:
         print("No alerts met the criteria. No messages will be sent.")

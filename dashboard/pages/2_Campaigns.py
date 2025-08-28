@@ -43,6 +43,33 @@ def save_all_links():
     # st.rerun() is not needed here as the app will automatically rerun after the callback completes.
 
 
+def display_campaign_details(campaign: Dict[str, Any]):
+    """
+    Displays the details for a single campaign in an expander.
+    """
+    campaign_status = campaign['campaign_status']
+    status_emoji = get_status_emoji(campaign_status)
+    labels = campaign.get('labels', [])
+    label_text = f" ({', '.join(labels)})" if labels else ""
+
+    with st.expander(f"**{status_emoji} {campaign['campaign_name']}**{label_text} (ID: `{campaign['campaign_id']}`)",
+                     expanded=False):
+        st.write(f"**Status:** `{campaign_status}`")
+
+        if labels:
+            st.write(f"**Labels ({len(labels)}):**")
+            st.code(', '.join(labels), language="text")
+
+        st.write(f"**Ad Groups ({len(campaign['ad_groups'])}):**")
+        if campaign['ad_groups']:
+            ad_groups_df = pd.DataFrame(campaign['ad_groups'])
+            ad_groups_df.rename(columns={'ad_group_name': 'Ad Group Name', 'ad_group_id': 'ID'},
+                                inplace=True)
+            st.dataframe(ad_groups_df, hide_index=True)
+        else:
+            st.write("No ad groups found.")
+
+
 # --- Main Page Logic ---
 
 def display_campaign_page():
@@ -84,26 +111,13 @@ def display_campaign_page():
     with col1:
         st.header("Campaigns & Ad Groups")
         st.info(
-            "Here you can view all campaigns fetched from your Google Ads account, including paused ones. Expand a campaign to see its ad groups.")
+            "Here you can view all campaigns fetched from your Google Ads account, including paused ones. Expand a campaign to see its ad groups and labels.")
 
         if not campaign_data:
             st.warning("No campaign data found. Please check your credentials and network connection.")
         else:
             for campaign in campaign_data:
-                campaign_status = campaign['campaign_status']
-                status_emoji = get_status_emoji(campaign_status)
-
-                with st.expander(f"**{status_emoji} {campaign['campaign_name']}** (ID: `{campaign['campaign_id']}`)",
-                                 expanded=False):
-                    st.write(f"**Status:** `{campaign_status}`")
-                    st.write(f"**Ad Groups ({len(campaign['ad_groups'])}):**")
-                    if campaign['ad_groups']:
-                        ad_groups_df = pd.DataFrame(campaign['ad_groups'])
-                        ad_groups_df.rename(columns={'ad_group_name': 'Ad Group Name', 'ad_group_id': 'ID'},
-                                            inplace=True)
-                        st.dataframe(ad_groups_df, hide_index=True)
-                    else:
-                        st.write("No ad groups found.")
+                display_campaign_details(campaign)
 
     with col2:
         st.header("Link Keywords to Campaigns")
