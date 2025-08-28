@@ -2,6 +2,7 @@ import streamlit as st
 import redis
 import os
 import json
+from typing import List, Dict, Any, Optional
 
 # --- Constants & Initialization ---
 SETTINGS_KEY = "dashboard_settings"
@@ -46,6 +47,7 @@ def initialize_redis_settings(force=False):
         "slack_webhook_url": ""
     }
     r.set(SETTINGS_KEY, json.dumps(default_settings))
+    # Keywords are now stored as a list of dictionaries to include campaign ID
     r.set(KEYWORDS_KEY, json.dumps([]))
     st.success("Database initialized with default settings and empty keywords!")
     print("Database initialized with default settings and empty keywords.")
@@ -66,14 +68,22 @@ def get_all_settings():
     return settings
 
 
-def get_keywords():
-    """Retrieves the tracked keywords from the Redis database."""
+def get_keywords() -> List[str]:
+    """
+    Retrieves the tracked keywords from the Redis database and returns a simple list of strings.
+    This ensures backward compatibility with app.py.
+    """
     r = get_redis_client()
     if r is None:
         return []
 
     keywords_json = r.get(KEYWORDS_KEY)
-    return json.loads(keywords_json) if keywords_json else []
+    if not keywords_json:
+        return []
+
+    # The stored data is now a list of dictionaries, so we extract the 'keyword' value
+    keywords_list_enriched = json.loads(keywords_json)
+    return [kw_data['keyword'] for kw_data in keywords_list_enriched]
 
 
 def save_all_settings(notification_threshold: int, min_hits_threshold: int, slack_webhook_url: str):
@@ -95,20 +105,84 @@ def save_all_settings(notification_threshold: int, min_hits_threshold: int, slac
         return False
 
 
-def save_keywords(keywords: list[str]):
-    """Saves the tracked keywords to the Redis database."""
+def save_keywords(keywords: List[str]):
+    """
+    Saves the tracked keywords to the Redis database while preserving existing campaign associations.
+    This is the method called by app.py.
+    """
     r = get_redis_client()
     if r is None:
         return False
 
+    # Retrieve the full enriched list to preserve campaign associations
+    keywords_list_enriched = get_keywords_enriched()
+    existing_map = {kw['keyword']: kw.get('campaign_id') for kw in keywords_list_enriched}
+
+    # Format the new list of keywords, adding campaign_id if it existed
+    keywords_to_save = []
+    for keyword in keywords:
+        campaign_id = existing_map.get(keyword)
+        keywords_to_save.append({
+            "keyword": keyword,
+            "campaign_id": campaign_id
+        })
+
     try:
-        r.set(KEYWORDS_KEY, json.dumps(keywords))
+        r.set(KEYWORDS_KEY, json.dumps(keywords_to_save))
         return True
     except Exception as e:
         st.error(f"Error saving keywords to Redis: {e}")
         return False
 
 
-if __name__ == '__main__':
-    print("Running Redis settings initialization script.")
-    initialize_redis_settings()
+def get_keywords_enriched() -> List[Dict[str, Any]]:
+    """
+    Retrieves the full list of tracked keywords with their campaign data.
+    This is for internal use where the enriched data is needed.
+    """
+    r = get_redis_client()
+    if r is None:
+        return []
+    keywords_json = r.get(KEYWORDS_KEY)
+    return json.loads(keywords_json) if keywords_json else []
+
+
+def save_keyword_campaign_links(links: Dict[str, Optional[int]]):
+    """
+    Saves a batch of keyword-campaign links to the Redis database.
+    """
+    r = get_redis_client()
+    if r is None:
+        return False
+
+    # Get the current list of keywords from Redis to preserve other data
+    current_keywords = get_keywords_enriched()
+    current_map = {kw['keyword']: kw for kw in current_keywords}
+
+    # Create the new list, updating campaign IDs based on the provided links
+    updated_keywords = []
+    for keyword, campaign_id in links.items():
+        if keyword in current_map:
+            # Update the existing dictionary
+            entry = current_map[keyword]
+            entry['campaign_id'] = campaign_id
+            updated_keywords.append(entry)
+        else:
+            # If the keyword doesn't exist yet, add it
+            updated_keywords.append({
+                "keyword": keyword,
+                "campaign_id": campaign_id
+            })
+
+    # We must also re-add any keywords that were not in the 'links' dictionary
+    # to avoid overwriting the entire list.
+    for keyword, entry in current_map.items():
+        if keyword not in links:
+            updated_keywords.append(entry)
+
+    try:
+        r.set(KEYWORDS_KEY, json.dumps(updated_keywords))
+        return True
+    except Exception as e:
+        st.error(f"Error saving keyword-campaign links to Redis: {e}")
+        return False

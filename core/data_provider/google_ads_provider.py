@@ -201,3 +201,65 @@ class GoogleAdsProvider(KeywordDataProvider):
                 "similar_keywords": similar_trends
             })
         return output
+
+    def get_campaign_data(self) -> List[Dict[str, Any]]:
+        """
+        Fetches all campaigns and their ad groups from the Google Ads API,
+        including paused ones, and sorts them with live campaigns first.
+
+        Returns:
+            A list of dictionaries, where each dictionary represents a campaign
+            and its associated ad groups.
+        """
+        campaigns_dict = {}
+        try:
+            ga_service = self.client.get_service("GoogleAdsService")
+            query = """
+                SELECT
+                    campaign.id,
+                    campaign.name,
+                    campaign.status,
+                    ad_group.id,
+                    ad_group.name
+                FROM ad_group
+                ORDER BY
+                    campaign.name
+            """
+
+            response = self._retry_on_rate_limit(ga_service.search_stream, customer_id=self.customer_id, query=query)
+
+            for batch in response:
+                for row in batch.results:
+                    campaign_id = row.campaign.id
+                    campaign_name = row.campaign.name
+                    campaign_status = self.client.enums.CampaignStatusEnum(row.campaign.status).name
+                    ad_group_id = row.ad_group.id
+                    ad_group_name = row.ad_group.name
+
+                    if campaign_id not in campaigns_dict:
+                        campaigns_dict[campaign_id] = {
+                            "campaign_id": campaign_id,
+                            "campaign_name": campaign_name,
+                            "campaign_status": campaign_status,
+                            "ad_groups": []
+                        }
+
+                    campaigns_dict[campaign_id]["ad_groups"].append({
+                        "ad_group_id": ad_group_id,
+                        "ad_group_name": ad_group_name
+                    })
+
+            # Sort campaigns: live campaigns (ENABLED) first, then all others
+            campaign_list = sorted(
+                list(campaigns_dict.values()),
+                key=lambda x: x["campaign_status"] != "ENABLED"
+            )
+
+        except GoogleAdsException as ex:
+            print(f"Request with ID '{ex.request_id}' failed for fetching campaigns.")
+            for error in ex.failure.errors:
+                print(f"\tError code: {error.error_code}")
+                print(f"\tMessage: {error.message}")
+            return []
+
+        return campaign_list

@@ -53,8 +53,8 @@ def get_analysis_results_cached(enriched_data: list[dict]):
 # --- Streamlit Page Configuration & CSS ---
 st.set_page_config(
     layout="wide",
-    page_title="Keyword Category Trend Monitor",
-    initial_sidebar_state="collapsed"
+    page_title="Keyword Dashboard",
+    initial_sidebar_state="expanded"
 )
 
 st.markdown(
@@ -66,7 +66,7 @@ st.markdown(
         box-shadow: 0 4px 15px rgba(0, 0, 0, 0.06) !important; margin: 25px auto !important;
         max-width: 900px !important; width: 95% !important;
     }
-    header, footer { display: none !important; }
+    /* Removed: header, footer { display: none !important; } */
     .block-container { padding-top: 1rem !important; padding-right: 2.5rem !important; padding-left: 2.5rem !important; padding-bottom: 1.5rem !important; }
     h1 { font-size: 2.2em !important; margin-bottom: 0.8rem !important; color: #222222 !important; font-weight: 700 !important; }
     h2 { font-size: 1.3em !important; margin-top: 2.8rem !important; margin-bottom: 0.9rem !important; color: #333333 !important; font-weight: 600 !important; }
