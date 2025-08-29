@@ -69,9 +69,10 @@ def run_analysis_pipeline():
 
     # 3. Generate trend data from Google Ads
     print("Generating trend data...")
-    # NOTE: Using FakeProvider for local testing to avoid API costs
-    # provider = FakeProvider(expanded_keywords)
-    provider = GoogleAdsProvider(expanded_keywords)
+    # Set the specific language and geo-target for the provider
+    LITHUANIA_GEO_ID = "2440"
+    ENGLISH_LANGUAGE_ID = "1000"
+    provider = GoogleAdsProvider(expanded_keywords, language_code=ENGLISH_LANGUAGE_ID, geo_target_id=LITHUANIA_GEO_ID)
     enriched_data = provider.generate_output()
     print("Trend data generated successfully.")
 
@@ -129,7 +130,7 @@ def extract_alerts_from_analysis(
 def update_campaign_labels(alerts: List[Dict[str, Any]], keywords_enriched: List[Dict[str, Any]]):
     """
     Resets 'Trending Keyword' labels on all campaigns and then applies
-    it to campaigns associated with keywords that triggered an alert.
+    it only to campaigns associated with keywords that triggered a POSITIVE trend alert.
     """
     print("\n" + "=" * 50)
     print("--- UPDATING GOOGLE ADS CAMPAIGN LABELS ---")
@@ -150,8 +151,10 @@ def update_campaign_labels(alerts: List[Dict[str, Any]], keywords_enriched: List
     for campaign_id in campaign_ids_to_remove_label:
         provider.set_campaign_label(campaign_id, label_name, "remove")
 
-    # Step 3: Find the campaign IDs for the keywords that triggered an alert
-    alert_keywords = {alert['keyword'] for alert in alerts}
+    # Step 3: Find the campaign IDs for the keywords that triggered a POSITIVE alert
+    positive_alerts = [alert for alert in alerts if alert['pct_change_month'] > 0]
+    alert_keywords = {alert['keyword'] for alert in positive_alerts}
+
     campaign_ids_to_add_label = set()
     for kw_data in keywords_enriched:
         if kw_data['keyword'] in alert_keywords and kw_data.get('campaign_id'):

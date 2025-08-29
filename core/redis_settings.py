@@ -150,38 +150,24 @@ def get_keywords_enriched() -> List[Dict[str, Any]]:
 def save_keyword_campaign_links(links: Dict[str, Optional[int]]):
     """
     Saves a batch of keyword-campaign links to the Redis database.
+    This function has been fixed to only update existing keywords without re-adding any.
     """
     r = get_redis_client()
     if r is None:
         return False
 
-    # Get the current list of keywords from Redis to preserve other data
+    # Get the current list of keywords from Redis
     current_keywords = get_keywords_enriched()
-    current_map = {kw['keyword']: kw for kw in current_keywords}
 
-    # Create the new list, updating campaign IDs based on the provided links
-    updated_keywords = []
-    for keyword, campaign_id in links.items():
-        if keyword in current_map:
-            # Update the existing dictionary
-            entry = current_map[keyword]
-            entry['campaign_id'] = campaign_id
-            updated_keywords.append(entry)
-        else:
-            # If the keyword doesn't exist yet, add it
-            updated_keywords.append({
-                "keyword": keyword,
-                "campaign_id": campaign_id
-            })
-
-    # We must also re-add any keywords that were not in the 'links' dictionary
-    # to avoid overwriting the entire list.
-    for keyword, entry in current_map.items():
-        if keyword not in links:
-            updated_keywords.append(entry)
+    # Iterate through the current keywords and update their campaign IDs
+    # if they are present in the 'links' dictionary.
+    for kw_data in current_keywords:
+        keyword = kw_data['keyword']
+        if keyword in links:
+            kw_data['campaign_id'] = links[keyword]
 
     try:
-        r.set(KEYWORDS_KEY, json.dumps(updated_keywords))
+        r.set(KEYWORDS_KEY, json.dumps(current_keywords))
         return True
     except Exception as e:
         st.error(f"Error saving keyword-campaign links to Redis: {e}")

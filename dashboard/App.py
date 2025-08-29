@@ -5,6 +5,7 @@ from pathlib import Path
 import datetime
 import altair as alt
 import sys
+from typing import List, Dict, Any
 
 # Add the project root to sys.path
 project_root = Path(__file__).parent.parent
@@ -29,18 +30,47 @@ def load_keywords_from_txt(path: Path) -> list[str]:
     with open(path, "r", encoding="utf-8") as f:
         return [line.strip() for line in f if line.strip()]
 
+# --- NEW CACHING FUNCTIONS ---
 
 @st.cache_data(show_spinner=False)
-def get_expanded_keywords_cached(loaded_keywords: list[str]) -> list[str]:
-    """Expands keywords. Cached."""
-    return expand_keywords_batch(loaded_keywords, n=2)
-
+def _get_expanded_keyword_cached(keyword: str) -> List[str]:
+    """Expands a single keyword. Cached."""
+    return expand_keywords_batch([keyword], n=2)
 
 @st.cache_data(show_spinner=False)
-def get_enriched_data_cached(expanded_keywords: list[str], language_code: str, geo_target_id: str):
-    """Generates trend data. Cached."""
-    provider = GoogleAdsProvider(expanded_keywords, language_code=language_code, geo_target_id=geo_target_id)
+def _get_enriched_keyword_data_cached(keyword: str, similar_keywords: List[str], language_code: str, geo_target_id: str):
+    """Generates trend data for a single keyword and its similar keywords. Cached."""
+    provider = GoogleAdsProvider([], language_code=language_code, geo_target_id=geo_target_id)
+    # The provider's __init__ takes a list of keyword dicts, so we must construct it.
+    data_to_fetch = [{
+        "keyword": keyword,
+        "similar_keywords": similar_keywords
+    }]
+    provider.data = data_to_fetch # Temporarily set the data
     return provider.generate_output()
+
+
+def get_expanded_keywords_cached(loaded_keywords: list[str]) -> list[str]:
+    """Expands keywords by fetching from a granular cache."""
+    expanded_keywords_master = []
+    for kw in loaded_keywords:
+        expanded_keywords = _get_expanded_keyword_cached(kw)
+        expanded_keywords_master.extend(expanded_keywords)
+    return expanded_keywords_master
+
+
+def get_enriched_data_cached(loaded_keywords: list[str], language_code: str, geo_target_id: str) -> list[dict]:
+    """Generates trend data by fetching from a granular cache."""
+    enriched_data_master = []
+    for kw in loaded_keywords:
+        # Get the expanded keywords for the current keyword
+        expanded_keywords_for_kw = _get_expanded_keyword_cached(kw)
+        # Extract the similar keywords (all but the first one, which is the original)
+        similar_kws = expanded_keywords_for_kw[1:]
+        # Get the enriched data for this specific keyword and its similar ones
+        enriched_data = _get_enriched_keyword_data_cached(kw, similar_kws, language_code, geo_target_id)
+        enriched_data_master.extend(enriched_data)
+    return enriched_data_master
 
 
 @st.cache_data(show_spinner=False)
@@ -275,7 +305,7 @@ def run():
         expanded_keywords_data = get_expanded_keywords_cached(loaded_keywords)
 
     with st.spinner("Generating trend data..."):
-        enriched_data = get_enriched_data_cached(expanded_keywords_data, st.session_state.selected_language_code,
+        enriched_data = get_enriched_data_cached(loaded_keywords, st.session_state.selected_language_code,
                                                  st.session_state.selected_geo_target_id)
 
     with st.spinner("Analyzing trends..."):
