@@ -19,6 +19,9 @@ from core.trend_analyzer import TrendAnalyzer
 from core.redis_settings import get_all_settings, save_all_settings, get_keywords, save_keywords
 from core.data_provider.google_ads_mappings import GEO_TARGET_MAP, LANGUAGE_MAP
 
+# Import the new scan function
+from core.ai_website_keyword_scanner import scan_website_for_keywords
+
 KEYWORDS_FILE_PATH = project_root / "data" / "keywords.txt"
 
 
@@ -30,6 +33,7 @@ def load_keywords_from_txt(path: Path) -> list[str]:
     with open(path, "r", encoding="utf-8") as f:
         return [line.strip() for line in f if line.strip()]
 
+
 # --- NEW CACHING FUNCTIONS ---
 
 @st.cache_data(show_spinner=False)
@@ -37,8 +41,10 @@ def _get_expanded_keyword_cached(keyword: str) -> List[str]:
     """Expands a single keyword. Cached."""
     return expand_keywords_batch([keyword], n=2)
 
+
 @st.cache_data(show_spinner=False)
-def _get_enriched_keyword_data_cached(keyword: str, similar_keywords: List[str], language_code: str, geo_target_id: str):
+def _get_enriched_keyword_data_cached(keyword: str, similar_keywords: List[str], language_code: str,
+                                      geo_target_id: str):
     """Generates trend data for a single keyword and its similar keywords. Cached."""
     provider = GoogleAdsProvider([], language_code=language_code, geo_target_id=geo_target_id)
     # The provider's __init__ takes a list of keyword dicts, so we must construct it.
@@ -46,7 +52,7 @@ def _get_enriched_keyword_data_cached(keyword: str, similar_keywords: List[str],
         "keyword": keyword,
         "similar_keywords": similar_keywords
     }]
-    provider.data = data_to_fetch # Temporarily set the data
+    provider.data = data_to_fetch  # Temporarily set the data
     return provider.generate_output()
 
 
@@ -78,6 +84,14 @@ def get_analysis_results_cached(enriched_data: list[dict]):
     """Analyzes trend data. Cached."""
     analyzer = TrendAnalyzer()
     return analyzer.analyze(enriched_data)
+
+
+@st.cache_data(show_spinner=False)
+def run_website_scan_cached(start_url: str, depth: int, max_pages: int, max_keywords: int) -> List[str]:
+    """
+    Runs the website keyword scan with caching to prevent re-running on every change.
+    """
+    return scan_website_for_keywords(start_url, depth, max_pages, max_keywords)
 
 
 # --- Streamlit Page Configuration & CSS ---
@@ -259,6 +273,90 @@ def run():
                 st.error("Error: Could not decode the file. Please ensure it is a plain text file (UTF-8 encoded).")
             except Exception as e:
                 st.error(f"An unexpected error occurred while reading the file: {e}")
+
+    st.markdown("<div class='page-divider'></div>", unsafe_allow_html=True)
+
+    # --- Website Scanner Section ---
+    display_section_title("Website Keyword Scanner")
+    with st.expander("Scan a Website for Keywords", expanded=False):
+        st.markdown(
+            "Enter a website URL to crawl and find keywords using AI. The extracted keywords can be added to your keyword list for analysis.")
+        st.markdown("---")
+
+        url_col, depth_col, pages_col, keywords_col = st.columns([2, 1, 1, 1])
+
+        with url_col:
+            website_url = st.text_input(
+                "Website URL:",
+                placeholder="https://www.example.com",
+                key="website_url_input",
+                help="The starting URL for the scan."
+            )
+        with depth_col:
+            crawl_depth = st.number_input(
+                "Crawl Depth:",
+                min_value=1,
+                max_value=5,
+                value=1,
+                key="crawl_depth_input",
+                help="The number of link levels to crawl from the starting URL."
+            )
+        with pages_col:
+            max_pages = st.number_input(
+                "Max Pages:",
+                min_value=1,
+                value=5,
+                key="max_pages_input",
+                help="The maximum number of unique pages to crawl."
+            )
+        with keywords_col:
+            max_keywords = st.number_input(
+                "Max Keywords:",
+                min_value=10,
+                value=50,
+                key="max_keywords_input",
+                help="The maximum number of keywords to extract. The process stops once this limit is reached."
+            )
+
+        st.markdown("")
+        if st.button("Start Scan", key="start_scan_button", help="Initiate the keyword scan."):
+            if website_url:
+                with st.spinner("Running website scan... This may take a few moments."):
+                    try:
+                        scanned_keywords = run_website_scan_cached(
+                            website_url, crawl_depth, max_pages, max_keywords
+                        )
+                        st.session_state.scanned_keywords = scanned_keywords
+                        st.success(f"✅ Scan complete! Found {len(scanned_keywords)} keywords.")
+                    except Exception as e:
+                        st.error(f"❌ An error occurred during the scan: {e}")
+                        st.session_state.scanned_keywords = []
+            else:
+                st.warning("Please enter a valid URL to start the scan.")
+
+        if "scanned_keywords" in st.session_state and st.session_state.scanned_keywords:
+            st.markdown("---")
+            st.subheader("Extracted Keywords:")
+            scanned_keywords_list_str = "\n".join(st.session_state.scanned_keywords)
+            st.text_area(
+                "Keywords from Scan:",
+                value=scanned_keywords_list_str,
+                height=200,
+                key="scanned_keywords_display",
+                help="These are the keywords found from the website scan. You can copy them to your primary list."
+            )
+
+            # Button to copy keywords to the main list
+            if st.button("Copy Scanned Keywords to Main List", key="copy_scanned_keywords_button"):
+                current_keywords = [kw.strip() for kw in st.session_state.editable_keywords_text.split('\n') if
+                                    kw.strip()]
+                scanned_keywords = st.session_state.scanned_keywords
+
+                # Combine and deduplicate
+                combined_keywords = sorted(list(set(current_keywords + scanned_keywords)))
+                st.session_state.editable_keywords_text = "\n".join(combined_keywords)
+                st.toast("Keywords copied to the main list. Click 'Apply' to analyze.", icon="📄")
+                st.rerun()
 
     loaded_keywords = [kw.strip() for kw in st.session_state.active_keywords_for_analysis.split('\n') if kw.strip()]
 
