@@ -371,29 +371,38 @@ def run():
 
     col_lang, col_geo = st.columns(2)
 
-    with col_lang:
-        language_options = sorted(list(LANGUAGE_MAP.keys()))
-        default_lang_index = language_options.index("English")
+    language_options = sorted(list(LANGUAGE_MAP.keys()))
+    country_options = sorted(list(GEO_TARGET_MAP.keys()))
 
+    # Initialize session state variables if they don't exist
+    if 'selected_language_name' not in st.session_state:
+        st.session_state.selected_language_name = "English"
+    if 'selected_country_name' not in st.session_state:
+        st.session_state.selected_country_name = "United States"
+
+    with col_lang:
         selected_language = st.selectbox(
             "Select Language:",
             options=language_options,
-            index=default_lang_index,
-            help="Choose the language for the keyword data."
+            index=language_options.index(st.session_state.selected_language_name),
+            help="Choose the language for the keyword data.",
+            key="language_selectbox"
         )
         st.session_state.selected_language_code = LANGUAGE_MAP[selected_language]
+        # Update the session state variable for the selected language name
+        st.session_state.selected_language_name = selected_language
 
     with col_geo:
-        country_options = sorted(list(GEO_TARGET_MAP.keys()))
-        default_country_index = country_options.index("United States")
-
         selected_country = st.selectbox(
             "Select Country/Region:",
             options=country_options,
-            index=default_country_index,
-            help="Choose the country or region for the keyword data."
+            index=country_options.index(st.session_state.selected_country_name),
+            help="Choose the country or region for the keyword data.",
+            key="country_selectbox"
         )
         st.session_state.selected_geo_target_id = GEO_TARGET_MAP[selected_country]
+        # Update the session state variable for the selected country name
+        st.session_state.selected_country_name = selected_country
 
     st.markdown("<div class='page-divider'></div>", unsafe_allow_html=True)
 
