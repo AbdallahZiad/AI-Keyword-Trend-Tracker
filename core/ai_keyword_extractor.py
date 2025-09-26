@@ -4,7 +4,7 @@ import json
 import re
 import logging
 from pathlib import Path
-from typing import List
+from typing import List, Dict, Any
 from openai import OpenAI
 import time
 
@@ -21,6 +21,7 @@ MAX_CHUNK_SIZE = MAX_PROMPT_TOKENS * CHARS_PER_TOKEN
 
 
 def _split_text_into_chunks(text: str) -> List[str]:
+    # This function remains unchanged
     if not text:
         return []
     chunks = []
@@ -42,6 +43,7 @@ def _extract_keywords_from_chunk(
         text_chunk: str,
         model: str = "gpt-3.5-turbo"
 ) -> List[str]:
+    # This function remains unchanged
     if not text_chunk or len(text_chunk) < 100:
         return []
 
@@ -101,6 +103,7 @@ def extract_keywords_from_scraped_text(
         consolidated_text: str,
         max_keywords: int = 100
 ) -> List[str]:
+    # This function remains unchanged
     if not consolidated_text:
         return []
     chunks = _split_text_into_chunks(consolidated_text)
@@ -121,3 +124,60 @@ def extract_keywords_from_scraped_text(
         time.sleep(0.5)
 
     return list(all_keywords)[:max_keywords]
+
+
+def categorize_keywords_with_ai(
+        scanned_keywords: List[str],
+        existing_structure: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """
+    Uses AI to categorize all keywords at once into the structured format,
+    ensuring no keywords are lost.
+    """
+    if not scanned_keywords:
+        return existing_structure
+
+    prompt = (
+        "You are a marketing strategist and keyword expert. Your task is to analyze a list of new keywords "
+        "from a website scan and categorize them. You must ensure **every single keyword** from the provided list is included "
+        "in your final output.\n\n"
+        "Your categorization rules are:\n"
+        "1. **Existing Categories**: If a new keyword logically belongs to a category in the provided `Existing Categories` list, "
+        "add it to that category. Group related keywords into the most relevant ad group within that category. "
+        "If a relevant ad group doesn't exist, create one with a logical name.\n"
+        "2. **New Categories**: For any new keyword that does not fit into an existing category, create a new, logical category for it. "
+        "Group related keywords into one or more new ad groups within this new category.\n\n"
+        "**Your final output MUST be a complete, merged JSON array** that contains both the `Existing Categories` and the newly created "
+        "categories. The JSON array MUST contain objects, one for each category. Each category object MUST have `category_name` "
+        "and `ad_groups` keys. Each ad group object must have `ad_group_name` and `keywords` keys. You must never omit any keywords, each and every single keyword must be categorized.\n\n"
+        "**Existing Categories (for context):**\n"
+        f"{json.dumps(existing_structure, indent=2)}\n\n"
+        "**New Keywords to Categorize:**\n"
+        f"{json.dumps(scanned_keywords, indent=2)}\n\n"
+        "Generate the complete categorized JSON structure:"
+    )
+
+    try:
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+            temperature=0.3,
+            max_tokens=12000
+        )
+
+        ai_output = json.loads(response.choices[0].message.content)
+
+        # Defensive programming: Ensure the AI response is a list.
+        if isinstance(ai_output, dict):
+            # If the AI returned a single dictionary, wrap it in a list.
+            return [ai_output]
+        elif isinstance(ai_output, list):
+            return ai_output
+        else:
+            logging.error(f"⚠️ AI returned an unexpected data type: {type(ai_output)}. Returning an empty list.")
+            return []
+
+    except Exception as e:
+        logging.error(f"❌ An error occurred during AI categorization: {e}", exc_info=True)
+        return []

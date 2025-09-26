@@ -1,98 +1,42 @@
+import logging
+
 import streamlit as st
 import pandas as pd
-from ui_helpers import format_percentage, display_header, display_section_title
 from pathlib import Path
-import datetime
-import altair as alt
 import sys
+import json
+import plotly.express as px
+from ui_helpers import display_header, display_section_title
 from typing import List, Dict, Any
+from datetime import datetime
 
-# Add the project root to sys.path
+# Add the project root to sys.path for imports from core and database
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-# Imports from core
-from core.keyword_expander import expand_keywords_batch
-from core.data_provider.google_ads_provider import GoogleAdsProvider
-from core.data_provider.fake_provider import FakeProvider
-from core.trend_analyzer import TrendAnalyzer
-from core.redis_settings import get_all_settings, save_all_settings, get_keywords, save_keywords
+# Import all utility functions from the new file
+from dashboard.app_utils import (
+    _add_category,
+    _remove_category,
+    _add_ad_group,
+    _remove_ad_group,
+    _update_category_name,
+    _update_ad_group_name,
+    _update_keywords,
+    _load_db_data_to_state,
+    _autosave_state_to_db,
+    _perform_enrichment,
+    _run_enrichment,
+    _perform_analysis,
+    _run_analysis_pipeline,
+    _save_changes,
+    _format_volatility_score,
+    _format_percentage,
+    run_website_scan_cached
+)
+
+# Import the correct mappings for country and language
 from core.data_provider.google_ads_mappings import GEO_TARGET_MAP, LANGUAGE_MAP
-
-# Import the new scan function
-from core.ai_website_keyword_scanner import scan_website_for_keywords
-
-KEYWORDS_FILE_PATH = project_root / "data" / "keywords.txt"
-
-
-# --- Functions ---
-def load_keywords_from_txt(path: Path) -> list[str]:
-    """Loads keywords from a text file."""
-    if not path.exists():
-        return []
-    with open(path, "r", encoding="utf-8") as f:
-        return [line.strip() for line in f if line.strip()]
-
-
-# --- NEW CACHING FUNCTIONS ---
-
-@st.cache_data(show_spinner=False)
-def _get_expanded_keyword_cached(keyword: str) -> List[str]:
-    """Expands a single keyword. Cached."""
-    return expand_keywords_batch([keyword], n=2)
-
-
-@st.cache_data(show_spinner=False)
-def _get_enriched_keyword_data_cached(keyword: str, similar_keywords: List[str], language_code: str,
-                                      geo_target_id: str):
-    """Generates trend data for a single keyword and its similar keywords. Cached."""
-    provider = GoogleAdsProvider([], language_code=language_code, geo_target_id=geo_target_id)
-    # The provider's __init__ takes a list of keyword dicts, so we must construct it.
-    data_to_fetch = [{
-        "keyword": keyword,
-        "similar_keywords": similar_keywords
-    }]
-    provider.data = data_to_fetch  # Temporarily set the data
-    return provider.generate_output()
-
-
-def get_expanded_keywords_cached(loaded_keywords: list[str]) -> list[str]:
-    """Expands keywords by fetching from a granular cache."""
-    expanded_keywords_master = []
-    for kw in loaded_keywords:
-        expanded_keywords = _get_expanded_keyword_cached(kw)
-        expanded_keywords_master.extend(expanded_keywords)
-    return expanded_keywords_master
-
-
-def get_enriched_data_cached(loaded_keywords: list[str], language_code: str, geo_target_id: str) -> list[dict]:
-    """Generates trend data by fetching from a granular cache."""
-    enriched_data_master = []
-    for kw in loaded_keywords:
-        # Get the expanded keywords for the current keyword
-        expanded_keywords_for_kw = _get_expanded_keyword_cached(kw)
-        # Extract the similar keywords (all but the first one, which is the original)
-        similar_kws = expanded_keywords_for_kw[1:]
-        # Get the enriched data for this specific keyword and its similar ones
-        enriched_data = _get_enriched_keyword_data_cached(kw, similar_kws, language_code, geo_target_id)
-        enriched_data_master.extend(enriched_data)
-    return enriched_data_master
-
-
-@st.cache_data(show_spinner=False)
-def get_analysis_results_cached(enriched_data: list[dict]):
-    """Analyzes trend data. Cached."""
-    analyzer = TrendAnalyzer()
-    return analyzer.analyze(enriched_data)
-
-
-@st.cache_data(show_spinner=False)
-def run_website_scan_cached(start_url: str, depth: int, max_pages: int, max_keywords: int) -> List[str]:
-    """
-    Runs the website keyword scan with caching to prevent re-running on every change.
-    """
-    return scan_website_for_keywords(start_url, depth, max_pages, max_keywords)
-
 
 # --- Streamlit Page Configuration & CSS ---
 st.set_page_config(
@@ -110,7 +54,6 @@ st.markdown(
         box-shadow: 0 4px 15px rgba(0, 0, 0, 0.06) !important; margin: 25px auto !important;
         max-width: 900px !important; width: 95% !important;
     }
-    /* Removed: header, footer { display: none !important; } */
     .block-container { padding-top: 1rem !important; padding-right: 2.5rem !important; padding-left: 2.5rem !important; padding-bottom: 1.5rem !important; }
     h1 { font-size: 2.2em !important; margin-bottom: 0.8rem !important; color: #222222 !important; font-weight: 700 !important; }
     h2 { font-size: 1.3em !important; margin-top: 2.8rem !important; margin-bottom: 0.9rem !important; color: #333333 !important; font-weight: 600 !important; }
@@ -151,10 +94,12 @@ st.markdown(
     span[style*="color:green"] { color: #28a745 !important; }
     span[style*="color:red"] { color: #dc3545 !important; }
     div[data-testid="stMarkdownContainer"] td span { font-size: 1.15em !important; line-height: 1 !important; display: inline-block; vertical-align: middle; }
+
     div[data-testid="stNumberInput"] input, div[data-testid="stTextInput"] input {
         background-color: white !important; border: 1px solid #D5D5D5 !important; border-radius: 5px !important;
         box-shadow: none !important; padding: 10px 14px !important; color: #333333 !important;
         font-size: 0.95em !important; outline: none !important;
+        height: 38px !important;
     }
     div[data-testid="stNumberInput"] input:focus, div[data-testid="stTextInput"] input:focus {
         border-color: #9ECFFB !important; box-shadow: 0 0 0 2px rgba(158, 207, 251, 0.3) !important;
@@ -166,30 +111,127 @@ st.markdown(
     div[data-testid="stNumberInput"] + div[data-testid="stMarkdownContainer"] p {
         font-size: 0.78em !important; color: #888888 !important; margin-top: 0.4em !important; line-height: 1.3 !important;
     }
-    .stButton > button {
+    div[data-testid="stButton"] button[kind="primary"] {
         border-radius: 5px !important; padding: 10px 20px !important; font-weight: 600 !important;
         border: none !important; box-shadow: 0 2px 5px rgba(0,0,0,0.1) !important;
         transition: background-color 0.2s, box-shadow 0.2s, color 0.2s !important;
         width: fit-content !important;
+        background-color: #4CAF50 !important;
+        color: white !important;
+    }
+    div[data-testid="stButton"] button[kind="primary"]:hover {
+        background-color: #45a049 !important;
+        box-shadow: 0 4px 8px rgba(0,0,0,0.15) !important;
+    }
+    div[data-testid="stButton"] button[kind="primary"] > div > div > span {
+        color: white !important;
+    }
+    .stButton > button {
+        border-radius: 5px !important; padding: 10px 20px !important; font-weight: 600 !important;
+        border: 1px solid #D5D5D5 !important;
+        background-color: #F8F9FA !important;
+        color: #555555 !important;
+        transition: background-color 0.2s, box-shadow 0.2s, color 0.2s !important;
+        width: fit-content !important;
+        box-shadow: none !important;
     }
     .stButton > button:hover {
-        background-color: #45a049 !important; box-shadow: 0 4px 8px rgba(0,0,0,0.15) !important;
+        background-color: #E9ECEF !important;
+        border-color: #C5C5C5 !important;
+        color: #333333 !important;
     }
-    div[data-testid="stButton"] > button > div > div > span { color: white !important; }
     .stButton > button > div > div > span {
         white-space: nowrap !important;
     }
-    div[data-testid="stButton"] {
-        margin: 0 !important;
-        min-width: unset !important;
-        max-width: unset !important;
+    .remove-button > button {
+        background-color: #F8F9FA !important;
+        border: 1px solid #D5D5D5 !important;
+        color: #888888 !important;
+        padding: 5px 10px !important;
+        box-shadow: none !important;
+        height: 100% !important;
     }
-    .button-container-keywords {
-        display: flex !important;
-        align-items: center !important;
-        width: 100% !important;
-        margin-top: 2rem !important;
-        flex-wrap: nowrap !important;
+    .remove-button > button:hover {
+        background-color: #E9ECEF !important;
+        color: #333333 !important;
+        border-color: #C5C5C5 !important;
+    }
+    .remove-button > button > div > div > span {
+        font-size: 1.2rem !important;
+        font-weight: 600 !important;
+        color: #888888 !important; /* Ensure the x is gray */
+    }
+    .remove-button > button:hover > div > div > span {
+        color: #333333 !important; /* Darken the x on hover */
+    }
+    .stTextInput label {
+    }
+    .remove-button-container {
+        display: flex;
+        align-items: center; /* Vertically align button with text input */
+        height: 100%;
+        margin-top: 0 !important;
+    }
+    .remove-button-container > button {
+        height: 100% !important; /* Force button to match container height */
+        padding-top: 5px !important;
+        padding-bottom: 5px !important;
+    }
+    .stTextArea {
+        border: 1px solid #D5D5D5;
+        border-radius: 5px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+        transition: box-shadow 0.2s, border-color 0.2s;
+    }
+    .stTextArea:focus-within {
+        border-color: #9ECFFB !important;
+        box-shadow: 0 0 0 2px rgba(158, 207, 251, 0.3) !important;
+    }
+
+    /* CUSTOM CSS for button alignment */
+    .button-container {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-top: 1.5rem;
+    }
+
+    .metric-container {
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        padding: 1rem;
+        border-radius: 8px;
+        background-color: #F8F9FA;
+        border: 1px solid #E0E0E0;
+        text-align: center;
+        height: 100%;
+    }
+
+    .metric-value {
+        font-size: 2.5em;
+        font-weight: 700;
+        color: #222;
+        margin-top: 0.2em;
+    }
+
+    .metric-label {
+        font-size: 1em;
+        color: #555;
+        text-transform: uppercase;
+        letter-spacing: 1px;
+        font-weight: 600;
+    }
+
+    /* Custom styles for the table cells to replace st.column_config.Progress */
+    .trend-cell {
+        display: flex;
+        align-items: center;
+    }
+    .trend-indicator {
+        font-size: 1.5em;
+        margin-right: 5px;
     }
     </style>
     """,
@@ -197,82 +239,448 @@ st.markdown(
 )
 
 
+# --- New Function to Merge Scanned Keywords ---
+def _merge_scanned_keywords_to_main_list():
+    """
+    Merges the structured keywords from the AI scan into the main session state structure.
+    This preserves category_id and ad_group_id if present in the scanned data,
+    but primarily merges by name.
+    """
+    if "scanned_keywords_structured" not in st.session_state or not st.session_state.scanned_keywords_structured:
+        st.toast("⚠️ No scanned keywords to copy.", icon="⚠️")
+        return
+
+    scanned_data = st.session_state.scanned_keywords_structured
+    current_data = st.session_state.structured_input
+
+    print("SCANNED KEYWORDS", scanned_data)
+    print("CURRENT KEYWORDS", current_data)
+
+    new_data = scanned_data[0]['categories']
+    for category in new_data:
+        for ad_group in category['ad_groups']:
+            ad_group['keywords'] = "\n".join(ad_group['keywords'])
+
+    st.session_state.structured_input = new_data
+
+    # Trigger a soft re-run to update the UI with the new structure
+    st.session_state.last_action = "merge_scan_data"
+    st.toast("✅ Scanned keywords merged into the main list! Remember to save.", icon="📝")
+    # No st.rerun() here, as the UI update is often handled by the main loop logic
+    # and we want to allow the user to see the change before another action.
+
+
+# --- Action callbacks ---
+def _save_changes():
+    """Saves the current state to the database and shows a toast."""
+    _autosave_state_to_db()
+    st.toast("✅ Changes saved successfully!", icon="💾")
+
+
+def _run_enrichment():
+    """Saves changes and triggers the enrichment pipeline."""
+    _autosave_state_to_db()
+    st.session_state.enrichment_triggered = True
+    st.toast("💡 Saving and starting enrichment pipeline...", icon="🚀")
+
+
+def _run_analysis_pipeline():
+    """Saves changes and triggers the analysis pipeline."""
+    _autosave_state_to_db()
+    st.session_state.analysis_triggered = True
+    st.toast("📊 Saving and starting analysis pipeline...", icon="🚀")
+
+
+def _render_keyword_input_section():
+    display_section_title("Keyword & Ad Group Configuration")
+
+    # Load initial data from the database if not already done
+    if "structured_input" not in st.session_state:
+        st.session_state.structured_input = []
+        _load_db_data_to_state()
+
+    with st.expander("Manage Categories & Ad Groups", expanded=True):
+        st.markdown(
+            "Build your campaign structure by defining categories, ad groups, and keywords. Your data is automatically loaded and saved to the database.")
+
+    for i, category in enumerate(st.session_state.structured_input):
+        category_container = st.container(border=True)
+        with category_container:
+
+            col1, col2 = st.columns([0.9, 0.1])
+            with col1:
+                def remove_category_with_rerun(cat_idx):
+                    if 0 <= cat_idx < len(st.session_state.structured_input):
+                        # 1. Remove the category
+                        # Since the category is indexed by 'i', we can use the index directly.
+                        # You'll need to define _remove_category_by_index or adapt your existing one.
+                        # For simplicity, let's assume direct deletion based on index:
+                        del st.session_state.structured_input[cat_idx]
+
+                        # 2. Clear stale widget states
+                        keys_to_delete = []
+                        for key in st.session_state.keys():
+                            # Clear all states related to the removed index 'cat_idx'
+                            # Note: This checks for keys *before* re-indexing.
+                            if key.startswith(f"category_name_input_{cat_idx}") or \
+                                    key.startswith(f"ad_group_name_input_{cat_idx}_") or \
+                                    key.startswith(f"keywords_text_area_{cat_idx}_"):
+                                keys_to_delete.append(key)
+
+                        for key in keys_to_delete:
+                            del st.session_state[key]
+
+                        # 3. Sync remaining widget states (Re-index remaining items)
+                        for new_i, cat in enumerate(st.session_state.structured_input):
+                            # Update category name keys
+                            st.session_state[f"category_name_input_{new_i}"] = cat["category_name"]
+
+                            for new_j, ag in enumerate(cat["ad_groups"]):
+                                # Update ad group name keys
+                                st.session_state[f"ad_group_name_input_{new_i}_{new_j}"] = ag["ad_group_name"]
+                                # Update keywords text area keys (assuming you have this widget elsewhere)
+                                if f"keywords_text_area_{new_i}_{new_j}" in st.session_state:
+                                    st.session_state[f"keywords_text_area_{new_i}_{new_j}"] = ag.get("keywords", "")
+
+                category_name_key = f"category_name_input_{i}"
+                category_name_value = st.session_state.get(category_name_key, category["category_name"])
+                st.text_input(
+                    "Category Name",
+                    value=category_name_value,
+                    key=category_name_key,
+                    label_visibility="collapsed",
+                    on_change=_update_category_name,
+                    args=(i,)
+                )
+            with col2:
+                st.button(
+                    "x",
+                    on_click=remove_category_with_rerun,
+                    args=(i,),  # Pass the index 'i'
+                    key=f"remove_category_{i}",  # Use index for key consistency after reruns
+                    help="Remove this category",
+                    type="secondary",  # Added type for visual consistency
+                    use_container_width=False  # Added for visual consistency
+                )
+
+            st.markdown("---")
+
+            # Ad Group Loop
+            for j, ad_group in enumerate(category["ad_groups"]):
+                ad_group_container = st.container(border=True)
+                with ad_group_container:
+                    ag_col1, ag_col2 = st.columns([0.9, 0.1])
+                    with ag_col1:
+                        ad_group_name_key = f"ad_group_name_input_{i}_{j}"
+                        ad_group_name_value = st.session_state.get(ad_group_name_key, ad_group["ad_group_name"])
+                        st.text_input(
+                            "Ad Group Name",
+                            value=ad_group_name_value,
+                            key=ad_group_name_key,
+                            label_visibility="collapsed",
+                            on_change=_update_ad_group_name,
+                            args=(i, j)
+                        )
+                    with ag_col2:
+                        def remove_ad_group_with_rerun(cat_idx, ad_idx):
+                            if 0 <= cat_idx < len(st.session_state.structured_input) and 0 <= ad_idx < len(
+                                    st.session_state.structured_input[cat_idx]["ad_groups"]):
+                                _remove_ad_group(cat_idx, ad_idx)
+                                # Clear stale widget states
+                                for key in list(st.session_state.keys()):
+                                    if key.startswith(f"ad_group_name_input_{cat_idx}_") or key.startswith(
+                                            f"keywords_text_area_{cat_idx}_"):
+                                        del st.session_state[key]
+                                # Sync remaining widget states
+                                for new_i, cat in enumerate(st.session_state.structured_input):
+                                    st.session_state[f"category_name_input_{new_i}"] = cat["category_name"]
+                                    for new_j, ag in enumerate(cat["ad_groups"]):
+                                        st.session_state[f"ad_group_name_input_{new_i}_{new_j}"] = ag["ad_group_name"]
+                                        st.session_state[f"keywords_text_area_{new_i}_{new_j}"] = ag["keywords"]
+                                st.rerun()
+
+                        st.button(
+                            "x",
+                            on_click=remove_ad_group_with_rerun,
+                            args=(i, j),
+                            key=f"remove_ad_group_{i}_{j}",
+                            help="Remove this ad group",
+                            type="secondary",
+                            use_container_width=False
+                        )
+
+                    st.markdown("---")
+
+                    keywords_key = f"keywords_text_area_{i}_{j}"
+                    keywords_value = st.session_state.get(keywords_key, ad_group["keywords"])
+                    st.text_area(
+                        "Keywords",
+                        value=keywords_value,
+                        key=keywords_key,
+                        height=150,
+                        label_visibility="collapsed",
+                        on_change=_update_keywords,
+                        args=(i, j)
+                    )
+                    st.markdown("One keyword per line.")
+
+            st.markdown("---")
+            st.button("Add Ad Group", on_click=_add_ad_group, args=(i,), key=f"add_ad_group_{i}",
+                      use_container_width=True)
+
+    st.markdown("---")
+    st.button("Add New Category", on_click=_add_category, key="add_category_main", use_container_width=True)
+
+    # Use a div with a custom class for CSS-based alignment
+    st.markdown('<div class="button-container">', unsafe_allow_html=True)
+    st.button("Save Changes", key="save_changes_button", on_click=_save_changes)
+    st.button("Enrich Data", key="enrich_data_button", on_click=_run_enrichment)
+    st.button("Run Analysis", key="run_analysis_button", on_click=_run_analysis_pipeline)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+
+def _render_analysis_section():
+    """Renders the three-tiered analysis dashboard."""
+    display_section_title("Keyword Analysis & Trends")
+
+    # New: Add Country and Language Targeting Settings
+    with st.expander("Data Source Settings", expanded=True):
+        st.markdown("Define the **geographic country** and **language** for your keyword analysis.")
+
+        # Get country and language options from the imported mappings
+        country_options = list(GEO_TARGET_MAP.keys())
+        language_options = list(LANGUAGE_MAP.keys())
+
+        # Initialize session state for selected options with a single default value
+        if 'country_targeting' not in st.session_state:
+            st.session_state.country_targeting = "United States"
+        if 'language_targeting' not in st.session_state:
+            st.session_state.language_targeting = "English"
+
+        # Use st.selectbox for single selection
+        col_country, col_lang = st.columns(2)
+        with col_country:
+            st.session_state.country_targeting = st.selectbox(
+                "Select Country:",
+                options=country_options,
+                index=country_options.index(st.session_state.country_targeting),
+                help="The geographic country to pull keyword data from."
+            )
+        with col_lang:
+            st.session_state.language_targeting = st.selectbox(
+                "Select Language:",
+                options=language_options,
+                index=language_options.index(st.session_state.language_targeting),
+                help="The language to filter keyword data by."
+            )
+
+    st.markdown("---")
+
+    if not st.session_state.get("analysis_results"):
+        st.info("📊 Run the analysis pipeline to view keyword trends and insights here.")
+        return
+
+    analyzed_results = st.session_state.analysis_results
+
+    # --- Tier 1: Executive Summary ---
+    total_keywords = sum(len(ag['keywords']) for cat in analyzed_results for ag in cat['ad_groups'])
+    positive_trend_keywords = sum(
+        1 for cat in analyzed_results for ag in cat['ad_groups']
+        for kw in ag['keywords'] if kw.get('pct_change_next_month', 0) > 0
+    )
+    negative_trend_keywords = total_keywords - positive_trend_keywords
+
+    avg_monthly_change = 0
+    if total_keywords > 0:
+        total_change = sum(
+            kw.get('pct_change_next_month', 0) for cat in analyzed_results for ag in cat['ad_groups']
+            for kw in ag['keywords']
+        )
+        avg_monthly_change = total_change / total_keywords
+
+    st.markdown("### Executive Summary")
+    col1, col2, col3 = st.columns(3)
+
+    with col1:
+        with st.container(border=True):
+            st.metric(
+                label="Overall Monthly Trend",
+                value=_format_percentage(avg_monthly_change)
+            )
+
+    with col2:
+        with st.container(border=True):
+            st.metric(
+                label="Keywords with Positive Trend",
+                value=f"{positive_trend_keywords}"
+            )
+
+    with col3:
+        with st.container(border=True):
+            st.metric(
+                label="Keywords with Negative Trend",
+                value=f"{negative_trend_keywords}"
+            )
+
+    st.markdown("---")
+
+    # --- Tier 2 & 3: Interactive Breakdown & Deep Dive ---
+    st.markdown("### Detailed Analysis")
+    st.info("📊 Select one or more keywords below to compare their historical trends.")
+
+    # Initialize a list to hold selected keywords if it doesn't exist
+    if 'selected_keywords' not in st.session_state:
+        st.session_state.selected_keywords = []
+
+    # Store all keywords with unique identifiers for checkboxes
+    all_keywords_with_keys = []
+    for cat_idx, category in enumerate(analyzed_results):
+        for ad_group_idx, ad_group in enumerate(category['ad_groups']):
+            for kw_idx, keyword in enumerate(ad_group['keywords']):
+                # Create a unique key for each keyword's checkbox
+                keyword_key = f"kw_check_{cat_idx}_{ad_group_idx}_{kw_idx}"
+                all_keywords_with_keys.append({
+                    'keyword': keyword['keyword'],
+                    'data': keyword,
+                    'checkbox_key': keyword_key
+                })
+
+    # Display checkboxes in a structured way (e.g., in expanders)
+    for category in analyzed_results:
+        with st.expander(f"📁 {category['category']} Analysis"):
+            for ad_group in category['ad_groups']:
+                with st.expander(f"📦 {ad_group['ad_group']} Ad Group"):
+                    # Create a list for the table
+                    keyword_data_table = []
+                    for keyword in ad_group['keywords']:
+                        keyword_data_table.append({
+                            'Keyword': keyword['keyword'],
+                            '1-Month Forecast': _format_percentage(keyword.get('pct_change_next_month')),
+                            '3-Month Forecast': _format_percentage(keyword.get('pct_change_next_3mo')),
+                            'Avg. Monthly Searches': f"{int(keyword.get('avg_monthly_searches', 0)):,}",
+                            'Seasonal Volatility Score': f"{keyword.get('seasonal_volatility_score', 0):.2f}"
+                        })
+                    df = pd.DataFrame(keyword_data_table)
+                    st.markdown(df.to_html(index=False), unsafe_allow_html=True)
+
+                    st.markdown("---")
+                    st.markdown("### Select Keywords to Plot:")
+
+                    # Loop through keywords to create checkboxes
+                    cols = st.columns(3)
+                    for i, keyword_info in enumerate(ad_group['keywords']):
+                        with cols[i % 3]:
+                            keyword_label = keyword_info['keyword']
+                            # Check if the keyword is already in the selected list
+                            is_checked = keyword_info in st.session_state.selected_keywords
+                            if st.checkbox(
+                                    label=keyword_label,
+                                    value=is_checked,
+                                    key=f"plot_check_{keyword_info['keyword']}_{ad_group['ad_group']}"
+                            ):
+                                # Add to selected list if checked and not already there
+                                if keyword_info not in st.session_state.selected_keywords:
+                                    st.session_state.selected_keywords.append(keyword_info)
+                            else:
+                                # Remove from selected list if unchecked
+                                if keyword_info in st.session_state.selected_keywords:
+                                    st.session_state.selected_keywords.remove(keyword_info)
+
+    # --- NEW PLOT LOGIC FOR MULTIPLE KEYWORDS ---
+    if st.session_state.selected_keywords:
+        st.markdown("---")
+        st.markdown(f"### Historical Trend Comparison 📊")
+        st.markdown(
+            "The chart below shows the **average monthly search volume** for selected keywords based on all historical data, excluding the current year's incomplete data.")
+
+        all_plot_data = []
+        months_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+        current_year = datetime.now().year
+        previous_month = datetime.now().month - 1
+
+        for keyword_info in st.session_state.selected_keywords:
+            trend_history = keyword_info.get('trend_history', {})
+            monthly_averages = [0] * 12
+            month_counts = [0] * 12
+
+            for year_str, months in trend_history.items():
+                year = int(year_str)
+                # Exclude incomplete data for the current year
+                months_to_average = months
+                if year == current_year:
+                    months_to_average = months[:previous_month]
+
+                for i, volume in enumerate(months_to_average):
+                    if i < 12 and volume > 0:  # Ensure index is valid
+                        monthly_averages[i] += volume
+                        month_counts[i] += 1
+
+            final_averages = [
+                monthly_averages[i] / month_counts[i] if month_counts[i] > 0 else 0
+                for i in range(12)
+            ]
+
+            # Add a data point for each month for the current keyword
+            for i, month_name in enumerate(months_names):
+                all_plot_data.append({
+                    'Month': month_name,
+                    'Avg. Search Volume': final_averages[i],
+                    'Keyword': keyword_info['keyword']
+                })
+
+        if all_plot_data:
+            df_trend = pd.DataFrame(all_plot_data)
+            fig = px.line(
+                df_trend,
+                x='Month',
+                y='Avg. Search Volume',
+                color='Keyword',
+                title="Average Monthly Search Volume Comparison"
+            )
+            fig.update_layout(
+                font=dict(family="Segoe UI", size=12, color="#333"),
+                hovermode="x unified"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("No historical data available for the selected keywords.")
+
+    st.markdown("---")
+
+
 def run():
     display_header()
     st.markdown("<div class='page-divider'></div>", unsafe_allow_html=True)
 
-    # --- Keyword Management Section ---
-    display_section_title("Keyword Management")
+    # Check for the save, enrichment, and analysis trigger flags
+    if 'enrichment_triggered' in st.session_state and st.session_state.enrichment_triggered:
+        with st.spinner("Enriching keywords with new ideas..."):
+            _perform_enrichment()
+            # Sync widget states with updated structured_input
+            for i, cat in enumerate(st.session_state.structured_input):
+                st.session_state[f"category_name_input_{i}"] = cat["category_name"]
+                for j, ag in enumerate(cat["ad_groups"]):
+                    st.session_state[f"ad_group_name_input_{i}_{j}"] = ag["ad_group_name"]
+                    st.session_state[f"keywords_text_area_{i}_{j}"] = ag["keywords"]
+            _autosave_state_to_db()
+        st.session_state.enrichment_triggered = False
+        st.rerun()
 
-    # Load keywords to be tracked from Redis on initial page load
-    tracked_keywords = get_keywords()
+    if 'analysis_triggered' in st.session_state and st.session_state.analysis_triggered:
+        with st.spinner("Fetching historical data... This may take some time."):
+            # Pass the single country and language selections to the analysis pipeline
+            _perform_analysis(
+                country=st.session_state.get('country_targeting'),
+                language=st.session_state.get('language_targeting')
+            )
+        st.session_state.analysis_triggered = False
+        st.rerun()
 
-    if "active_keywords_for_analysis" not in st.session_state:
-        # Use keywords from Redis if they exist, otherwise use the default file
-        if tracked_keywords:
-            default_keywords_list = tracked_keywords
-        else:
-            default_keywords_list = load_keywords_from_txt(KEYWORDS_FILE_PATH)
+    _render_keyword_input_section()
 
-        st.session_state.active_keywords_for_analysis = "\n".join(default_keywords_list)
-        st.session_state.editable_keywords_text = st.session_state.active_keywords_for_analysis
+    st.markdown("<div class='page-divider'></div>", unsafe_allow_html=True)
 
-    with st.expander("Configure Keywords", expanded=True):
-        st.markdown("Enter keywords below, one per line. These will be used for analysis.")
-        st.markdown("---")
-
-        edited_keywords_raw = st.text_area(
-            "Keywords List:",
-            value=st.session_state.editable_keywords_text,
-            height=200,
-            help="Type or paste keywords, **one per line**. Click 'Apply Keywords' below to update.",
-            key="keywords_text_input_raw"
-        )
-
-        if edited_keywords_raw != st.session_state.editable_keywords_text:
-            st.session_state.editable_keywords_text = edited_keywords_raw
-
-        # Refactored button placement to be on separate lines
-        if st.button("Apply Keywords", key="apply_keywords_button"):
-            if st.session_state.editable_keywords_text != st.session_state.active_keywords_for_analysis:
-                st.session_state.active_keywords_for_analysis = st.session_state.editable_keywords_text
-                st.rerun()
-
-        st.markdown("")  # Adds a small vertical space
-
-        if st.button("Save & Track Keywords", key="track_keywords_button"):
-            # First, apply the keywords to the session state
-            st.session_state.active_keywords_for_analysis = st.session_state.editable_keywords_text
-            keywords_to_save = [kw.strip() for kw in st.session_state.editable_keywords_text.split('\n') if kw.strip()]
-
-            # Then, save the keywords to Redis
-            if save_keywords(keywords_to_save):
-                st.toast("Keywords saved for tracking!", icon="✅")
-                st.rerun()
-            else:
-                st.error("Failed to save keywords to Redis.")
-
-        st.markdown("---")
-
-        uploaded_file = st.file_uploader(
-            "Or upload a keywords.txt file:",
-            type=["txt"],
-            help="Uploading a plain text (.txt) file will overwrite the keywords in the text area above and automatically trigger analysis. Ensure it's UTF-8 encoded with one keyword per line.",
-            key="keyword_file_uploader"
-        )
-
-        if uploaded_file is not None:
-            try:
-                file_contents = uploaded_file.read().decode("utf-8")
-                if file_contents != st.session_state.active_keywords_for_analysis or \
-                        file_contents != st.session_state.editable_keywords_text:
-                    st.session_state.editable_keywords_text = file_contents
-                    st.session_state.active_keywords_for_analysis = file_contents
-                    st.rerun()
-            except UnicodeDecodeError:
-                st.error("Error: Could not decode the file. Please ensure it is a plain text file (UTF-8 encoded).")
-            except Exception as e:
-                st.error(f"An unexpected error occurred while reading the file: {e}")
+    _render_analysis_section()
 
     st.markdown("<div class='page-divider'></div>", unsafe_allow_html=True)
 
@@ -290,7 +698,7 @@ def run():
                 "Website URL:",
                 placeholder="https://www.example.com",
                 key="website_url_input",
-                help="The starting URL for the scan."
+                help="The starting URL for the scan.",
             )
         with depth_col:
             crawl_depth = st.number_input(
@@ -315,324 +723,62 @@ def run():
                 min_value=10,
                 value=50,
                 key="max_keywords_input",
-                help="The maximum number of keywords to extract. The process stops once this limit is reached."
+                help="The maximum number of keywords to extract. The process stops once this limit is reached.",
             )
 
         st.markdown("")
-        if st.button("Start Scan", key="start_scan_button", help="Initiate the keyword scan."):
+        if st.button("Start Scan", key="start_scan_button", use_container_width=True,
+                     help="Initiate the keyword scan."):
             if website_url:
                 with st.spinner("Running website scan... This may take a few moments."):
                     try:
-                        scanned_keywords = run_website_scan_cached(
-                            website_url, crawl_depth, max_pages, max_keywords
+                        # Pass the current structure for the AI to categorize against
+                        scanned_keywords_structured = run_website_scan_cached(
+                            website_url.strip(), st.session_state.structured_input, crawl_depth, max_pages, max_keywords
                         )
-                        st.session_state.scanned_keywords = scanned_keywords
-                        st.success(f"✅ Scan complete! Found {len(scanned_keywords)} keywords.")
+                        st.session_state.scanned_keywords_structured = scanned_keywords_structured
+
+                        # Calculate total unique keywords found for the success message
+                        total_keywords_found = sum(
+                            len(ag.get('keywords', [])) for cat in scanned_keywords_structured[0]['categories'] for
+                            ag in cat.get('ad_groups', [])
+                        )
+
+                        st.success(
+                            f"✅ Scan complete! {total_keywords_found} keywords have been categorized into {len(scanned_keywords_structured[0]['categories'])} categories.")
                     except Exception as e:
                         st.error(f"❌ An error occurred during the scan: {e}")
-                        st.session_state.scanned_keywords = []
+                        logging.error(f"❌ An error occurred during Scanning: {e}", exc_info=True)
+                        st.session_state.scanned_keywords_structured = []
             else:
                 st.warning("Please enter a valid URL to start the scan.")
 
-        if "scanned_keywords" in st.session_state and st.session_state.scanned_keywords:
+        if "scanned_keywords_structured" in st.session_state and st.session_state.scanned_keywords_structured:
             st.markdown("---")
-            st.subheader("Extracted Keywords:")
-            scanned_keywords_list_str = "\n".join(st.session_state.scanned_keywords)
-            st.text_area(
-                "Keywords from Scan:",
-                value=scanned_keywords_list_str,
-                height=200,
-                key="scanned_keywords_display",
-                help="These are the keywords found from the website scan. You can copy them to your primary list."
-            )
+            st.subheader("Extracted Keywords Preview:")
 
-            # Button to copy keywords to the main list
-            if st.button("Copy Scanned Keywords to Main List", key="copy_scanned_keywords_button"):
-                current_keywords = [kw.strip() for kw in st.session_state.editable_keywords_text.split('\n') if
-                                    kw.strip()]
-                scanned_keywords = st.session_state.scanned_keywords
+            # --- Display Preview of Scanned Data ---
+            print(st.session_state.scanned_keywords_structured)
+            for i, category in enumerate(st.session_state.scanned_keywords_structured[0]['categories']):
+                with st.expander(
+                        f"Category: {category['category_name']} ({len(category.get('ad_groups', []))} Ad Groups)"):
+                    for j, ad_group in enumerate(category['ad_groups']):
+                        keywords_str = "\n".join(ad_group.get('keywords', ''))
+                        keyword_count = len(ad_group.get('keywords', []))
+                        st.text_area(
+                            f"Ad Group: {ad_group['ad_group_name']} ({keyword_count} keywords)",
+                            value=keywords_str,
+                            height=100,
+                            key=f"scanned_kw_display_{i}_{j}",
+                            help="Keywords generated by AI. One keyword per line.",
+                            disabled=True
+                        )
 
-                # Combine and deduplicate
-                combined_keywords = sorted(list(set(current_keywords + scanned_keywords)))
-                st.session_state.editable_keywords_text = "\n".join(combined_keywords)
-                st.toast("Keywords copied to the main list. Click 'Apply' to analyze.", icon="📄")
+            # Button to copy keywords to the main list (Now fully functional)
+            if st.button("Copy Scanned Categories to Main List", key="copy_scanned_keywords_button",
+                         use_container_width=True):
+                _merge_scanned_keywords_to_main_list()
                 st.rerun()
-
-    loaded_keywords = [kw.strip() for kw in st.session_state.active_keywords_for_analysis.split('\n') if kw.strip()]
-
-    if not loaded_keywords:
-        st.warning("No keywords provided. Please enter keywords above or upload a file to proceed.")
-        st.stop()
-
-    st.markdown("<div class='page-divider'></div>", unsafe_allow_html=True)
-
-    # --- Data Source Section ---
-    display_section_title("Data Source Settings")
-
-    col_lang, col_geo = st.columns(2)
-
-    language_options = sorted(list(LANGUAGE_MAP.keys()))
-    country_options = sorted(list(GEO_TARGET_MAP.keys()))
-
-    # Initialize session state variables if they don't exist
-    if 'selected_language_name' not in st.session_state:
-        st.session_state.selected_language_name = "English"
-    if 'selected_country_name' not in st.session_state:
-        st.session_state.selected_country_name = "United States"
-
-    with col_lang:
-        selected_language = st.selectbox(
-            "Select Language:",
-            options=language_options,
-            index=language_options.index(st.session_state.selected_language_name),
-            help="Choose the language for the keyword data.",
-            key="language_selectbox"
-        )
-        st.session_state.selected_language_code = LANGUAGE_MAP[selected_language]
-        # Update the session state variable for the selected language name
-        st.session_state.selected_language_name = selected_language
-
-    with col_geo:
-        selected_country = st.selectbox(
-            "Select Country/Region:",
-            options=country_options,
-            index=country_options.index(st.session_state.selected_country_name),
-            help="Choose the country or region for the keyword data.",
-            key="country_selectbox"
-        )
-        st.session_state.selected_geo_target_id = GEO_TARGET_MAP[selected_country]
-        # Update the session state variable for the selected country name
-        st.session_state.selected_country_name = selected_country
-
-    st.markdown("<div class='page-divider'></div>", unsafe_allow_html=True)
-
-    current_day_month_year_str = datetime.datetime.now().strftime("%Y-%m-%d")
-
-    with st.spinner("Expanding keywords..."):
-        expanded_keywords_data = get_expanded_keywords_cached(loaded_keywords)
-
-    with st.spinner("Generating trend data..."):
-        enriched_data = get_enriched_data_cached(loaded_keywords, st.session_state.selected_language_code,
-                                                 st.session_state.selected_geo_target_id)
-
-    with st.spinner("Analyzing trends..."):
-        analysis_results_for_table = get_analysis_results_cached(enriched_data)
-
-    # --- Table Display ---
-    display_section_title("Tracked Categories & Keywords")
-    col_label, col_select = st.columns([0.65, 0.35])
-
-    with col_label:
-        st.markdown("**Sort Keywords By:**")
-
-    with col_select:
-        sort_option = st.selectbox(
-            "Hidden Label for Sort Dropdown",
-            options=["Most Searched", "Highest Increase (30 Days)", "Highest Decrease (30 Days)",
-                     "Highest Increase (90 Days)", "Highest Decrease (90 Days)"],
-            index=0,
-            label_visibility="collapsed",
-            help="Select a sorting order for the table below."
-        )
-
-    # Map for easy lookup of similar keywords
-    keyword_map = {item["keyword"]: item.get("similar_keywords", []) for item in enriched_data}
-
-    table_data_raw = []
-    available_keywords = []
-    current_month_index = datetime.datetime.now().month - 1
-    years_to_average = [2022, 2023, 2024]
-
-    for item in analysis_results_for_table:
-        keyword = item.get('keyword', 'N/A')
-        available_keywords.append(keyword)
-        pct_change_month = item.get('pct_change_month')
-        pct_change_3mo = item.get('pct_change_3mo')
-        expected_volume = 0
-        valid_years_count = 0
-        full_trend_history = next((enriched_item.get('trend_history') for enriched_item in enriched_data if
-                                   enriched_item.get('keyword') == keyword), None)
-
-        if full_trend_history:
-            for year in years_to_average:
-                if year in full_trend_history and len(full_trend_history[year]) > current_month_index:
-                    expected_volume += full_trend_history[year][current_month_index]
-                    valid_years_count += 1
-        if valid_years_count > 0:
-            expected_volume = round(expected_volume / valid_years_count)
-        table_data_raw.append({
-            "keyword": keyword,
-            "expected_volume": expected_volume,
-            "pct_change_month": pct_change_month,
-            "pct_change_3mo": pct_change_3mo,
-        })
-
-    if sort_option == "Most Searched":
-        sorted_data = sorted(table_data_raw, key=lambda x: x['expected_volume'], reverse=True)
-    elif sort_option == "Highest Increase (30 Days)":
-        sorted_data = sorted(table_data_raw,
-                             key=lambda x: x['pct_change_month'] if x['pct_change_month'] is not None else -float(
-                                 'inf'), reverse=True)
-    elif sort_option == "Highest Decrease (30 Days)":
-        sorted_data = sorted(table_data_raw,
-                             key=lambda x: x['pct_change_month'] if x['pct_change_month'] is not None else float('inf'))
-    elif sort_option == "Highest Increase (90 Days)":
-        sorted_data = sorted(table_data_raw,
-                             key=lambda x: x['pct_change_3mo'] if x['pct_change_3mo'] is not None else -float('inf'),
-                             reverse=True)
-    elif sort_option == "Highest Decrease (90 Days)":
-        sorted_data = sorted(table_data_raw,
-                             key=lambda x: x['pct_change_3mo'] if x['pct_change_3mo'] is not None else float('inf'))
-    else:
-        sorted_data = table_data_raw
-
-    table_data_display = []
-    for item in sorted_data:
-        pct_change_month = item['pct_change_month']
-        trend_arrow_html = ""
-        if pct_change_month is not None:
-            if pct_change_month > 0:
-                trend_arrow_html = "<span style='color:green; font-weight: bold;'>↑</span>"
-            elif pct_change_month < 0:
-                trend_arrow_html = "<span style='color:red; font-weight: bold;'>↓</span>"
-            else:
-                trend_arrow_html = "<span>―</span>"
-
-        # Get similar keywords and format them for the tooltip
-        similar_kws = keyword_map.get(item['keyword'], [])
-        tooltip_text = f"Expanded Keywords: " + ", ".join(similar_kws) if similar_kws else "No expanded keywords."
-
-        # Create a span with the title attribute for the tooltip
-        keyword_with_tooltip = f"<span title='{tooltip_text}'>{item['keyword']}</span>"
-
-        table_data_display.append({
-            "CATEGORY/KEYWORD": keyword_with_tooltip,
-            "EXPECTED MONTHLY VOLUME": f"{item['expected_volume']:,}",
-            "% CHANGE (30 DAYS)": format_percentage(pct_change_month) if pct_change_month is not None else "",
-            " % CHANGE (90 DAYS)": format_percentage(item['pct_change_3mo']) if item[
-                                                                                    'pct_change_3mo'] is not None else "",
-            "TREND": trend_arrow_html
-        })
-
-    df = pd.DataFrame(table_data_display)
-    if not df.empty:
-        st.markdown(
-            f"""
-            <div class="table-responsive-wrapper">
-                {df.to_html(escape=False, index=False)}
-            </div>
-            """,
-            unsafe_allow_html=True
-        )
-    else:
-        st.info("No trend data available to display in the table.")
-
-    # --- Checkbox Selection for Graph ---
-    display_section_title("Select Keywords for Trend Graph")
-    selected_keywords_for_graph = []
-    if available_keywords:
-        cols = st.columns(4)
-        for i, kw in enumerate(available_keywords):
-            if f"checkbox_{kw.replace(' ', '_')}" not in st.session_state:
-                st.session_state[f"checkbox_{kw.replace(' ', '_')}"] = (i == 0)
-            with cols[i % 4]:
-                if st.checkbox(kw, key=f"checkbox_{kw.replace(' ', '_')}"):
-                    selected_keywords_for_graph.append(kw)
-    else:
-        st.info("No keywords available to select for the graph.")
-
-    # --- TREND HISTORY GRAPH ---
-    display_section_title("Trend History (Selected Categories)")
-
-    if selected_keywords_for_graph and enriched_data:
-        dfs_to_concat = []
-        month_names = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-
-        for keyword_to_plot in selected_keywords_for_graph:
-            selected_trend_history = next(
-                (item.get('trend_history') for item in enriched_data if item.get('keyword') == keyword_to_plot), None)
-
-            if selected_trend_history:
-                years_to_average = [2022, 2023, 2024]
-                monthly_averages = [0] * 12
-                valid_years_count = 0
-                for year in years_to_average:
-                    if year in selected_trend_history:
-                        for month_index, volume in enumerate(selected_trend_history[year]):
-                            monthly_averages[month_index] += volume
-                        valid_years_count += 1
-                if valid_years_count > 0:
-                    monthly_averages = [round(v / valid_years_count) for v in monthly_averages]
-                    kw_df = pd.DataFrame({"Month": month_names, keyword_to_plot: monthly_averages}).set_index("Month")
-                    dfs_to_concat.append(kw_df)
-            else:
-                st.warning(f"No trend history found for '{keyword_to_plot}'.")
-
-        if dfs_to_concat:
-            final_graph_df = pd.concat(dfs_to_concat, axis=1)
-            final_graph_df.index.name = 'Month'
-            final_graph_df.reset_index(inplace=True)
-            df_long = pd.melt(final_graph_df, id_vars='Month', var_name='Keyword', value_name='Average Monthly Volume')
-            chart = alt.Chart(df_long).mark_line(point=True).encode(
-                x=alt.X('Month:N', sort=month_names, title='Month'),
-                y=alt.Y('Average Monthly Volume:Q', title='Average Search Volume'),
-                color=alt.Color('Keyword:N', title='Keyword')
-            ).properties(
-                title='Average Monthly Search Volume Trends (2022-2024)'
-            )
-            st.altair_chart(chart, use_container_width=True)
-        else:
-            st.info("No selected keywords have complete trend data to display.")
-    elif not selected_keywords_for_graph:
-        st.info("Please select at least one keyword above to see its trend history.")
-    else:
-        st.info("Please ensure keywords are loaded and data is generated to see trend history.")
-
-    # --- Settings ---
-    display_section_title("Settings & Configuration")
-
-    # Load settings from Redis on initial page load
-    if 'settings' not in st.session_state:
-        st.session_state.settings = get_all_settings()
-
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.subheader("Notification Threshold (% Change):")
-        notification_threshold = st.number_input(
-            "Hidden label for notification threshold.",
-            min_value=0, max_value=100,
-            value=st.session_state.settings.get('notification_threshold', 10),
-            label_visibility="collapsed",
-            key="notification_threshold_input"
-        )
-        st.markdown("Notify if search volume changes by this percentage.")
-    with col2:
-        st.subheader("Minimum Monthly Hits:")
-        min_hits = st.number_input(
-            "Hidden label for minimum monthly hits.",
-            min_value=0,
-            value=st.session_state.settings.get('min_hits_threshold', 100),
-            label_visibility="collapsed",
-            key="min_hits_input"
-        )
-        st.markdown("Notify only if expected monthly volume is above this limit.")
-    with col3:
-        st.subheader("Slack Webhook URL:")
-        slack_webhook = st.text_input(
-            "Hidden label for Slack webhook URL.",
-            value=st.session_state.settings.get('slack_webhook_url', ''),
-            placeholder="Enter Slack webhook URL",
-            label_visibility="collapsed",
-            key="slack_webhook_url_input"
-        )
-        st.markdown("Notifications will be sent to this Slack channel.")
-
-    button_col, _ = st.columns([0.5, 2])
-    with button_col:
-        if st.button("Save Settings"):
-            if save_all_settings(notification_threshold, min_hits, slack_webhook):
-                st.session_state.settings = get_all_settings()
-                st.toast("Settings saved successfully!", icon="✅")
 
 
 if __name__ == "__main__":

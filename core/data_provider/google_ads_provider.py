@@ -27,6 +27,7 @@ class GoogleAdsProvider(KeywordDataProvider):
     def __init__(self, data: List[Dict[str, Any]],
                  language_code: str = "1000",
                  geo_target_id: str = "2840"):
+        # The 'data' now represents a nested list of categories, ad groups, and keywords
         self.data = data
         self.client = self._get_google_ads_client()
         self.keyword_plan_service = self.client.get_service("KeywordPlanIdeaService")
@@ -104,7 +105,7 @@ class GoogleAdsProvider(KeywordDataProvider):
             # Should not be reachable, but as a fallback
             raise Exception("Retry mechanism failed without catching an exception.")
 
-    def get_monthly_volumes_by_year(self, keyword: str) -> Dict[int, List[int]]:
+    def get_monthly_volumes_by_year(self, keyword: str) -> Dict[str, List[int]]:
         """
         Fetches historical monthly search volume for a single keyword and formats it.
         """
@@ -136,7 +137,8 @@ class GoogleAdsProvider(KeywordDataProvider):
 
         today = datetime.now()
         end_date = today.replace(day=1)
-        start_date = end_date - relativedelta(months=42)
+        # Fetch 3 full years of data + some of the current year
+        start_date = end_date - relativedelta(months=43)
 
         historical_metrics_options.year_month_range.start.year = start_date.year
         historical_metrics_options.year_month_range.start.month = start_date.month
@@ -156,7 +158,7 @@ class GoogleAdsProvider(KeywordDataProvider):
 
             trend_data = {}
             for monthly_search_volume in response.results[0].keyword_metrics.monthly_search_volumes:
-                year = monthly_search_volume.year
+                year = str(monthly_search_volume.year)  # Use string keys to avoid type errors
                 month_enum = monthly_search_volume.month
                 search_volume = monthly_search_volume.monthly_searches or 0
 
@@ -170,7 +172,7 @@ class GoogleAdsProvider(KeywordDataProvider):
                     print(f"Skipping invalid month enum '{month_enum}' for keyword '{keyword}' in year '{year}'.")
 
             # Sort the years for a clean output
-            sorted_trend_data = {int(year): trend_data[year] for year in sorted(trend_data)}
+            sorted_trend_data = {year: trend_data[year] for year in sorted(trend_data)}
             return sorted_trend_data
 
         except GoogleAdsException as ex:
@@ -180,28 +182,72 @@ class GoogleAdsProvider(KeywordDataProvider):
                 print(f"\tMessage: {error.message}")
             return {}
 
+    def get_keyword_ideas(self, seed_keywords: List[str], max_results: int = 50) -> List[str]:
+        """
+        Generates a list of relevant keyword ideas from a list of seed keywords.
+        The ad_group_name parameter was removed as it's not a valid field for the request.
+        """
+        request = self.client.get_type("GenerateKeywordIdeasRequest")
+        request.customer_id = self.customer_id
+        request.language = f"languageConstants/{self.language_code}"
+        request.geo_target_constants.append(f"geoTargetConstants/{self.geo_target_id}")
+
+        # Set the seeds for keyword ideas
+        request.keyword_seed.keywords.extend(seed_keywords)
+
+        try:
+            # Wrap the API call in the retry function
+            response = self._retry_on_rate_limit(
+                self.keyword_plan_service.generate_keyword_ideas,
+                request=request
+            )
+
+            keyword_ideas = []
+            for idea in response.results:
+                keyword_ideas.append(idea.text)
+                if len(keyword_ideas) >= max_results:
+                    break
+
+            return keyword_ideas
+
+        except GoogleAdsException as ex:
+            print(f"Request with ID '{ex.request_id}' failed for keyword ideas.")
+            for error in ex.failure.errors:
+                print(f"\tError code: {error.error_code}")
+                print(f"\tMessage: {error.message}")
+            return []
+
     def generate_output(self) -> List[Dict[str, Any]]:
         """
-        Generates the final output by fetching real keyword trend data from the API
-        and structuring it according to the required format.
+        Generates the final output by fetching keyword trend data from the API
+        and structuring it according to the required nested format.
+
+        This method is now a simplified part of the pipeline, assuming the
+        data has already been expanded by the KeywordIdeaExpander.
         """
-        output = []
-        for entry in self.data:
-            keyword = entry["keyword"]
-            similar_keywords = entry.get("similar_keywords", [])
-
-            keyword_trend = self.get_monthly_volumes_by_year(keyword)
-
-            similar_trends = {}
-            for similar_kw in similar_keywords:
-                similar_trends[similar_kw] = self.get_monthly_volumes_by_year(similar_kw)
-
-            output.append({
-                "keyword": keyword,
-                "trend_history": keyword_trend,
-                "similar_keywords": similar_trends
+        analyzed_categories = []
+        for category_data in self.data:
+            category_name = category_data.get("category")
+            analyzed_ad_groups = []
+            for ad_group_data in category_data.get("ad_groups", []):
+                ad_group_name = ad_group_data.get("ad_group")
+                analyzed_keywords = []
+                for keyword_data in ad_group_data.get("keywords", []):
+                    keyword = keyword_data.get("keyword")
+                    trend_history = self.get_monthly_volumes_by_year(keyword)
+                    analyzed_keywords.append({
+                        "keyword": keyword,
+                        "trend_history": trend_history
+                    })
+                analyzed_ad_groups.append({
+                    "ad_group": ad_group_name,
+                    "keywords": analyzed_keywords
+                })
+            analyzed_categories.append({
+                "category": category_name,
+                "ad_groups": analyzed_ad_groups
             })
-        return output
+        return analyzed_categories
 
     def get_campaign_data(self) -> List[Dict[str, Any]]:
         """
@@ -218,16 +264,14 @@ class GoogleAdsProvider(KeywordDataProvider):
 
             # Query 1: Get campaign data along with ad groups
             ad_group_query = """
-                SELECT
-                    campaign.id,
-                    campaign.name,
-                    campaign.status,
-                    ad_group.id,
-                    ad_group.name
-                FROM ad_group
-                ORDER BY
-                    campaign.name
-            """
+                             SELECT campaign.id, \
+                                    campaign.name, \
+                                    campaign.status, \
+                                    ad_group.id, \
+                                    ad_group.name
+                             FROM ad_group
+                             ORDER BY campaign.name \
+                             """
 
             ad_group_response = self._retry_on_rate_limit(ga_service.search_stream, customer_id=self.customer_id,
                                                           query=ad_group_query)
@@ -259,13 +303,11 @@ class GoogleAdsProvider(KeywordDataProvider):
             # Query 2: Get all campaign label resource names
             # This query must be separate as the FROM clause is different.
             campaign_label_query = """
-                SELECT
-                    campaign.id,
-                    campaign_label.label
-                FROM campaign_label
-                ORDER BY
-                    campaign.id
-            """
+                                   SELECT campaign.id, \
+                                          campaign_label.label
+                                   FROM campaign_label
+                                   ORDER BY campaign.id \
+                                   """
 
             label_resource_names = {}
             campaign_response = self._retry_on_rate_limit(ga_service.search_stream, customer_id=self.customer_id,
