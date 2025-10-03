@@ -177,10 +177,78 @@ class GoogleAdsProvider(KeywordDataProvider):
 
         except GoogleAdsException as ex:
             print(f"Request with ID '{ex.request_id}' failed.")
-            for error in ex.failure.errors:
+            for error in error.failure.errors:
                 print(f"\tError code: {error.error_code}")
                 print(f"\tMessage: {error.message}")
             return {}
+
+    def filter_keywords_by_monthly_volume(self, keywords: List[str]) -> List[str]:
+        """
+        Runs a lightweight check on a list of keywords to filter out those with no
+        monthly search volume data available from Google Ads, OR keywords with
+        an average monthly search volume below a safe commercial threshold (currently 10).
+
+        Args:
+            keywords: A list of keyword strings to check.
+
+        Returns:
+            A high-quality list of keywords that meet the minimum volume criteria.
+        """
+        if not keywords:
+            return []
+
+        # Define the minimum acceptable average monthly search volume
+        MIN_AVG_VOLUME = 10
+
+        # Use GenerateKeywordHistoricalMetricsRequest for checking existence and volume.
+        request = self.client.get_type("GenerateKeywordHistoricalMetricsRequest")
+        request.customer_id = self.customer_id
+        request.keywords.extend(keywords)
+
+        request.language = f"languageConstants/{self.language_code}"
+        request.geo_target_constants.append(f"geoTargetConstants/{self.geo_target_id}")
+
+        # Setting HistoricalMetricsOptions is optional for this quick check,
+        # but including a minimal range ensures the API is prompted to return search volume data.
+        historical_metrics_options = self.client.get_type("HistoricalMetricsOptions")
+        today = datetime.now()
+        start_date = today - relativedelta(months=1)
+        end_date = today
+
+        historical_metrics_options.year_month_range.start.year = start_date.year
+        historical_metrics_options.year_month_range.start.month = start_date.month
+        historical_metrics_options.year_month_range.end.year = end_date.year
+        historical_metrics_options.year_month_range.end.month = end_date.month
+        request.historical_metrics_options = historical_metrics_options
+
+        try:
+            # Call the service that returns historical metrics for the provided keywords
+            response = self._retry_on_rate_limit(
+                self.keyword_plan_service.generate_keyword_historical_metrics,
+                request=request
+            )
+
+            high_quality_keywords = []
+            for result in response.results:
+                keyword = result.text
+
+                # Access the average monthly searches metric
+                avg_volume = result.keyword_metrics.avg_monthly_searches or 0
+
+                # 1. The keyword must have data (result must be returned)
+                # 2. The average monthly searches must meet the minimum threshold (>= 10)
+                if avg_volume >= MIN_AVG_VOLUME and keyword:
+                    high_quality_keywords.append(keyword)
+
+            return high_quality_keywords
+
+        except GoogleAdsException as ex:
+            print(f"Request with ID '{ex.request_id}' failed during keyword filtering.")
+            for error in ex.failure.errors:
+                print(f"\tError code: {error.error_code}")
+                print(f"\tMessage: {error.message}")
+            # If the API call fails, return the original list to be safe, as intended.
+            return keywords
 
     def get_keyword_ideas(self, seed_keywords: List[str], max_results: int = 50) -> List[str]:
         """

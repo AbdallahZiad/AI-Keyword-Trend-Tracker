@@ -19,17 +19,23 @@ sys.path.insert(0, str(project_root))
 # Import the core components
 from core.web_scraper import WebScraper
 from core.ai_keyword_extractor import extract_keywords_from_scraped_text, categorize_keywords_with_ai
+# Import the GoogleAdsProvider to use the new lightweight filtering method
+from core.data_provider.google_ads_provider import GoogleAdsProvider
+
 
 def scan_website_for_keywords(
         start_url: str,
         existing_structure: List[Dict[str, Any]],
         depth: int = 1,
         max_pages: int = 20,
-        max_keywords: int = 100
+        max_keywords: int = 100,
+        language_code: str = "1000",
+        geo_target_id: str = "2840"
 ) -> List[Dict[str, Any]]:
     """
     Orchestrates the entire process of crawling a website, extracting keywords,
-    and then categorizing them using AI. The output is formatted specifically
+    filtering out low-quality keywords using a Google Ads API check, and then
+    categorizing the clean list using AI. The output is formatted specifically
     for the UI's merge function.
 
     Args:
@@ -39,6 +45,8 @@ def scan_website_for_keywords(
         depth (int): The number of link levels to crawl from the start_url.
         max_pages (int): The maximum number of unique pages to crawl.
         max_keywords (int): The maximum number of keywords to return.
+        language_code (str): Google Ads language ID for filtering.
+        geo_target_id (str): Google Ads geo target ID for filtering.
 
     Returns:
         List[Dict[str, Any]]: The formatted data structure ready for merging,
@@ -49,6 +57,7 @@ def scan_website_for_keywords(
 
     logging.info("🤖 Starting AI-powered keyword scan...")
     logging.info(f"URL: {start_url}, Depth: {depth}, Max Pages: {max_pages}, Max Keywords: {max_keywords}")
+    logging.info(f"Filter settings: Language={language_code}, Geo={geo_target_id}")
 
     # Step 1: Initialize and run the web scraper with max_pages limit
     scraper = WebScraper()
@@ -58,32 +67,68 @@ def scan_website_for_keywords(
             logging.error("❌ Scraping returned no text. Cannot proceed.")
             return []
     except Exception as e:
-        logging.error(f"❌ An error occurred during AI categorization: {e}", exc_info=True)
+        logging.error(f"❌ An error occurred during scraping: {e}", exc_info=True)
         return []
 
     logging.info(f"✅ Scraping complete. Total text size: {len(consolidated_text)} characters.")
 
     # Step 2: Use the AI to extract a raw list of keywords from the scraped text
     try:
-        suggested_keywords = extract_keywords_from_scraped_text(consolidated_text, max_keywords)
-        if not suggested_keywords:
+        suggested_keywords_raw = extract_keywords_from_scraped_text(consolidated_text, max_keywords)
+        if not suggested_keywords_raw:
             logging.warning("⚠️ AI extraction found no relevant keywords.")
             return []
     except Exception as e:
-        logging.error(f"❌ An error occurred during AI categorization: {e}", exc_info=True)
+        logging.error(f"❌ An error occurred during AI extraction: {e}", exc_info=True)
         return []
 
-    logging.info(f"✅ Raw keyword extraction complete. Found {len(suggested_keywords)} unique keywords.")
+    logging.info(f"✅ Raw keyword extraction complete. Found {len(suggested_keywords_raw)} unique keywords.")
 
-    # Step 3: Use the AI to categorize the raw keywords into the structured format
+    # Step 2.5: Lightweight Keyword Quality Filtering using Google Ads API
     try:
-        # This returns a List[Dict[str, Any]] of categories
+        # Initialize provider (data=None is fine for the filter method)
+        google_ads_provider = GoogleAdsProvider(
+            data=[],
+            language_code=language_code,
+            geo_target_id=geo_target_id
+        )
+
+        # Filter the raw list
+        suggested_keywords_filtered = google_ads_provider.filter_keywords_by_monthly_volume(
+            suggested_keywords_raw
+        )
+
+        keywords_removed = len(suggested_keywords_raw) - len(suggested_keywords_filtered)
+
+        if keywords_removed > 0:
+            logging.info(f"🧹 Filter removed {keywords_removed} low-volume/invalid keywords.")
+
+        if not suggested_keywords_filtered:
+            logging.warning("⚠️ All keywords were filtered out by the volume check. Cannot proceed to categorization.")
+            return []
+
+    except Exception as e:
+        # Log the error but proceed with the raw list if filtering fails (safer than crashing)
+        logging.error(
+            f"⚠️ Failed to perform Google Ads keyword filtering. Proceeding with {len(suggested_keywords_raw)} raw keywords. Error: {e}",
+            exc_info=True)
+        suggested_keywords_filtered = suggested_keywords_raw
+
+    # Step 3: Use the AI to categorize the clean list of keywords into the structured format
+    try:
+        # Prepare the existing structure for the AI (ensure keywords are a list of strings)
         new_existing_structure = existing_structure
         for category in new_existing_structure:
-            for ad_group in category['ad_groups']:
-                if type(ad_group['keywords']) is not list:
-                    ad_group['keywords'] = ad_group.get('keywords', '').split("\n")
-        categorized_structure = categorize_keywords_with_ai(suggested_keywords, new_existing_structure)
+            for ad_group in category.get('ad_groups', []):
+                # Ensure the 'keywords' field is handled correctly before passing to the AI
+                if type(ad_group.get('keywords')) is not list:
+                    # Assuming keywords might be a comma/newline separated string if stored oddly
+                    keywords_list = ad_group.get('keywords', '').split("\n")
+                    ad_group['keywords'] = [k.strip() for k in keywords_list if k.strip()]
+
+        # Pass the FILTERED list to the AI
+        categorized_structure = categorize_keywords_with_ai(suggested_keywords_filtered, new_existing_structure)
+
     except Exception as e:
         logging.error(f"❌ An error occurred during AI categorization: {e}", exc_info=True)
         return []

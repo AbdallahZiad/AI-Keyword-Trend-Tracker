@@ -738,11 +738,15 @@ def run():
                         )
                         st.session_state.scanned_keywords_structured = scanned_keywords_structured
 
-                        # Calculate total unique keywords found for the success message
-                        total_keywords_found = sum(
-                            len(ag.get('keywords', [])) for cat in scanned_keywords_structured[0]['categories'] for
-                            ag in cat.get('ad_groups', [])
-                        )
+                        if len(scanned_keywords_structured) > 0:
+                            # Calculate total unique keywords found for the success message
+                            total_keywords_found = sum(
+                                len(ag.get('keywords', [])) for cat in scanned_keywords_structured[0]['categories'] for
+                                ag in cat.get('ad_groups', [])
+                            )
+                        else:
+                            st.toast("Couldn't scan website due to its anti-scraping measures. Try again later.", icon="⚠️")
+                            return
 
                         st.success(
                             f"✅ Scan complete! {total_keywords_found} keywords have been categorized into {len(scanned_keywords_structured[0]['categories'])} categories.")
