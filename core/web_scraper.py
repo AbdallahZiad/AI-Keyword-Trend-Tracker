@@ -50,29 +50,37 @@ class WebScraper:
                     return None
         return None
 
-    def _extract_text_and_links(self, html_content: str, base_url: str) -> tuple[str, list[str]]:
+    def _extract_text_and_links(self, html_content: str, base_url: str, headlines_only: bool = False) -> tuple[
+        str, list[str]]:
         if not html_content:
             return "", []
 
         soup = BeautifulSoup(html_content, 'html.parser')
 
+        # Clean the HTML content first
         for script_or_style in soup(['script', 'style', 'noscript']):
             script_or_style.decompose()
 
-        # Find the main content of the page, with fallback options.
-        main_content = (
-                soup.find('main')
-                or soup.find('article')
-                or soup.find(id='content')
-                or soup.find(class_='main-content')
-                or soup.find('body')
-        )
-
-        if main_content:
-            text = main_content.get_text(separator=' ', strip=True)
-            text = ' '.join(text.split())
+        if headlines_only:
+            # New logic for HEADLINES ONLY: find all header tags and join their text
+            headline_tags = soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+            text = ' '.join(tag.get_text(separator=' ', strip=True) for tag in headline_tags)
+            text = ' '.join(text.split())  # Normalize spacing
         else:
-            text = ""
+            # Original logic: find the main content block
+            main_content = (
+                    soup.find('main')
+                    or soup.find('article')
+                    or soup.find(id='content')
+                    or soup.find(class_='main-content')
+                    or soup.find('body')
+            )
+
+            if main_content:
+                text = main_content.get_text(separator=' ', strip=True)
+                text = ' '.join(text.split())
+            else:
+                text = ""
 
         links = []
         parsed_base_url = urlparse(base_url)
@@ -94,10 +102,9 @@ class WebScraper:
                 if clean_url not in self.visited_urls:
                     links.append(clean_url)
 
-        # The subsequent link deduplication is now unnecessary and removed.
         return text, links
 
-    def scrape_website(self, start_url: str, depth: int, max_pages: int) -> str:
+    def scrape_website(self, start_url: str, depth: int, max_pages: int, headlines_only: bool = False) -> str:
         url_queue: Deque[tuple[str, int]] = deque([(start_url, 0)])
         all_text = []
 
@@ -120,7 +127,9 @@ class WebScraper:
             if not html_content:
                 continue
 
-            text, links = self._extract_text_and_links(html_content, current_url)
+            # Pass the new parameter to the text and link extraction method
+            text, links = self._extract_text_and_links(html_content, current_url, headlines_only)
+
             if text:
                 all_text.append(text)
 

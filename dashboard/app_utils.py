@@ -282,8 +282,8 @@ def _format_volatility_score(value: float) -> str:
 
 
 @st.cache_data(show_spinner=False)
-def run_website_scan_cached(start_url: str, existing_structure, depth: int, max_pages: int, max_keywords: int):
+def run_website_scan_cached(start_url: str, existing_structure, depth: int, max_pages: int, max_keywords: int, headlines_only: bool):
     """
     Runs the website keyword scan with caching to prevent re-running on every change.
     """
-    return scan_website_for_keywords(start_url.strip(), existing_structure, depth, max_pages, max_keywords)
+    return scan_website_for_keywords(start_url.strip(), existing_structure, depth, max_pages, max_keywords, headlines_only=headlines_only)

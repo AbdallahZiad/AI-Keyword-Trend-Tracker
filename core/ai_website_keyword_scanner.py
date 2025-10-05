@@ -30,7 +30,8 @@ def scan_website_for_keywords(
         max_pages: int = 20,
         max_keywords: int = 100,
         language_code: str = "1000",
-        geo_target_id: str = "2840"
+        geo_target_id: str = "2840",
+        headlines_only: bool = False,
 ) -> List[Dict[str, Any]]:
     """
     Orchestrates the entire process of crawling a website, extracting keywords,
@@ -47,6 +48,8 @@ def scan_website_for_keywords(
         max_keywords (int): The maximum number of keywords to return.
         language_code (str): Google Ads language ID for filtering.
         geo_target_id (str): Google Ads geo target ID for filtering.
+        headlines_only (bool): If True, restricts the source text for keyword extraction
+                          to only text contained within HTML header tags (h1-h6).
 
     Returns:
         List[Dict[str, Any]]: The formatted data structure ready for merging,
@@ -57,12 +60,14 @@ def scan_website_for_keywords(
 
     logging.info("🤖 Starting AI-powered keyword scan...")
     logging.info(f"URL: {start_url}, Depth: {depth}, Max Pages: {max_pages}, Max Keywords: {max_keywords}")
-    logging.info(f"Filter settings: Language={language_code}, Geo={geo_target_id}")
+    logging.info(f"Filter settings: Language={language_code}, Geo={geo_target_id}, Headlines Only: {headlines_only}")
 
     # Step 1: Initialize and run the web scraper with max_pages limit
     scraper = WebScraper()
     try:
-        consolidated_text = scraper.scrape_website(start_url, depth, max_pages)
+        # PASS THE NEW 'headlines' PARAMETER TO THE SCRAPER
+        consolidated_text = scraper.scrape_website(start_url, depth, max_pages, headlines_only=headlines_only)
+        print(consolidated_text)
         if not consolidated_text:
             logging.error("❌ Scraping returned no text. Cannot proceed.")
             return []
@@ -140,7 +145,7 @@ def scan_website_for_keywords(
 
 # This block allows you to run the file directly for testing the full pipeline.
 if __name__ == "__main__":
-    test_url = "https://webscraper.io/test-sites/e-commerce/allinone"
+    test_url = "https://www.apple.com/iphone/"
     test_depth = 1
     test_max_pages = 5
     test_max_keywords = 25
@@ -160,12 +165,26 @@ if __name__ == "__main__":
 
     logging.info("\n--- Running End-to-End Keyword Scanner Demo ---")
 
-    final_structured_keywords = scan_website_for_keywords(
+    # DEMO 1: Full Content Scan
+    logging.info("\n--- DEMO 1: FULL CONTENT SCAN ---")
+    final_structured_keywords_full = scan_website_for_keywords(
         test_url,
         test_existing_structure,
         test_depth,
         test_max_pages,
-        test_max_keywords
+        test_max_keywords,
+        headlines_only=False  # Full Content
     )
+    print(json.dumps(final_structured_keywords_full, indent=2))
 
-    print(final_structured_keywords)
+    logging.info("\n--- DEMO 2: HEADLINES ONLY SCAN ---")
+    # DEMO 2: Headlines Only Scan
+    final_structured_keywords_headlines = scan_website_for_keywords(
+        test_url,
+        test_existing_structure,
+        test_depth,
+        test_max_pages,
+        test_max_keywords,
+        headlines_only=True  # Headlines Only
+    )
+    print(json.dumps(final_structured_keywords_headlines, indent=2))

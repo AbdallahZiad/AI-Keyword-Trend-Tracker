@@ -4,10 +4,8 @@ import streamlit as st
 import pandas as pd
 from pathlib import Path
 import sys
-import json
 import plotly.express as px
 from ui_helpers import display_header, display_section_title
-from typing import List, Dict, Any
 from datetime import datetime
 
 # Add the project root to sys.path for imports from core and database
@@ -30,7 +28,6 @@ from dashboard.app_utils import (
     _perform_analysis,
     _run_analysis_pipeline,
     _save_changes,
-    _format_volatility_score,
     _format_percentage,
     run_website_scan_cached
 )
@@ -252,9 +249,6 @@ def _merge_scanned_keywords_to_main_list():
 
     scanned_data = st.session_state.scanned_keywords_structured
     current_data = st.session_state.structured_input
-
-    print("SCANNED KEYWORDS", scanned_data)
-    print("CURRENT KEYWORDS", current_data)
 
     new_data = scanned_data[0]['categories']
     for category in new_data:
@@ -726,15 +720,30 @@ def run():
                 help="The maximum number of keywords to extract. The process stops once this limit is reached.",
             )
 
+        # 1. ADD THE CHECKBOX HERE (Best placement for a boolean option)
+        # Set to True by default, as requested.
+        headlines_only = st.checkbox(
+            "Extract Keywords from **Headlines Only** (H1-H6)",
+            value=True,
+            key="headlines_only_checkbox",
+            help="If checked, the scraper will only use content from <h1> to <h6> tags. This typically provides higher-quality, more commercially focused keywords."
+        )
+
         st.markdown("")
         if st.button("Start Scan", key="start_scan_button", use_container_width=True,
                      help="Initiate the keyword scan."):
             if website_url:
                 with st.spinner("Running website scan... This may take a few moments."):
                     try:
-                        # Pass the current structure for the AI to categorize against
+                        # 2. PASS THE HEADLINES PARAMETER TO THE SCANNER FUNCTION
                         scanned_keywords_structured = run_website_scan_cached(
-                            website_url.strip(), st.session_state.structured_input, crawl_depth, max_pages, max_keywords
+                            website_url.strip(),
+                            st.session_state.structured_input,
+                            crawl_depth,
+                            max_pages,
+                            max_keywords,
+                            # New Parameter:
+                            headlines_only=headlines_only
                         )
                         st.session_state.scanned_keywords_structured = scanned_keywords_structured
 
@@ -745,7 +754,8 @@ def run():
                                 ag in cat.get('ad_groups', [])
                             )
                         else:
-                            st.toast("Couldn't scan website due to its anti-scraping measures. Try again later.", icon="⚠️")
+                            st.toast("Couldn't scan website due to its anti-scraping measures or no keywords found.",
+                                     icon="⚠️")
                             return
 
                         st.success(
@@ -756,10 +766,6 @@ def run():
                         st.session_state.scanned_keywords_structured = []
             else:
                 st.warning("Please enter a valid URL to start the scan.")
-
-        if "scanned_keywords_structured" in st.session_state and st.session_state.scanned_keywords_structured:
-            st.markdown("---")
-            st.subheader("Extracted Keywords Preview:")
 
             # --- Display Preview of Scanned Data ---
             print(st.session_state.scanned_keywords_structured)
