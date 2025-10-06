@@ -1,7 +1,6 @@
 import pandas as pd
 import streamlit as st
 import json
-from typing import List, Dict, Any
 from pathlib import Path
 import sys
 
@@ -327,8 +326,8 @@ def _format_volatility_score(value: float) -> str:
 
 
 @st.cache_data(show_spinner=False)
-def run_website_scan_cached(start_url: str, existing_structure, depth: int, max_pages: int, max_keywords: int, headlines_only: bool):
+def run_website_scan_cached(start_url: str, existing_structure, depth: int, max_pages: int, max_keywords: int, headlines_only: bool, language_code:str, geo_target_id:str):
     """
     Runs the website keyword scan with caching to prevent re-running on every change.
     """
-    return scan_website_for_keywords(start_url.strip(), existing_structure, depth, max_pages, max_keywords, headlines_only=headlines_only)
+    return scan_website_for_keywords(start_url.strip(), existing_structure, depth, max_pages, max_keywords, headlines_only=headlines_only, language_code=LANGUAGE_MAP[language_code], geo_target_id=GEO_TARGET_MAP[geo_target_id])

@@ -15,7 +15,6 @@ sys.path.insert(0, str(project_root))
 # Import all utility functions from the new file
 from dashboard.app_utils import (
     _add_category,
-    _remove_category,
     _add_ad_group,
     _remove_ad_group,
     _update_category_name,
@@ -760,7 +759,9 @@ def run():
                             crawl_depth,
                             max_pages,
                             max_keywords,
-                            headlines_only=headlines_only
+                            headlines_only,
+                            st.session_state.language_targeting,
+                            st.session_state.country_targeting,
                         )
 
                         st.session_state.scanned_keywords_structured = scanned_keywords_structured
