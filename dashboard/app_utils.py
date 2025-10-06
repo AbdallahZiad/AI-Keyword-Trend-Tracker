@@ -133,7 +133,6 @@ def _autosave_state_to_db():
                             db.upsert_keyword(keyword.strip(), ad_group_id)
 
             db.conn.commit()
-            st.toast("✅ Changes saved to database!")
 
         except Exception as e:
             st.error(f"❌ Could not save changes. Data has been rolled back: {e}")
@@ -176,6 +175,52 @@ def _perform_enrichment():
     except Exception as e:
         st.error(f"❌ An error occurred during enrichment: {e}")
 
+def _run_enrichment_ad_group(cat_idx, ad_idx):
+    """Triggers the enrichment process for a single ad group by first saving changes, then setting a flag."""
+    if "structured_input" not in st.session_state or not st.session_state.structured_input:
+        st.warning("No data to enrich. Please add categories and ad groups first.")
+        return
+
+    if 0 <= cat_idx < len(st.session_state.structured_input) and 0 <= ad_idx < len(st.session_state.structured_input[cat_idx]["ad_groups"]):
+        _autosave_state_to_db()
+        st.session_state.enrichment_ad_group_triggered = (cat_idx, ad_idx)
+        st.toast("Enrichment started for this ad group...", icon="⏳")
+    else:
+        st.warning("Invalid ad group selected for enrichment.")
+
+def _perform_enrichment_ad_group(cat_idx, ad_idx):
+    """Performs the keyword enrichment using the expander for a single ad group."""
+    try:
+        if 0 <= cat_idx < len(st.session_state.structured_input) and 0 <= ad_idx < len(st.session_state.structured_input[cat_idx]["ad_groups"]):
+            category = st.session_state.structured_input[cat_idx]
+            ad_group = category["ad_groups"][ad_idx]
+
+            # Build a minimal expander_data structure for just this ad group (mirroring the global logic)
+            keywords_list = [{"keyword": kw.strip()} for kw in ad_group["keywords"].strip().split('\n') if kw.strip()]
+            expander_data = [
+                {
+                    "category": category["category_name"],
+                    "ad_groups": [
+                        {
+                            "ad_group": ad_group["ad_group_name"],
+                            "keywords": keywords_list
+                        }
+                    ]
+                }
+            ]
+
+            provider = GoogleAdsProvider(data=[])
+            expander = KeywordIdeaExpander(google_ads_provider=provider)
+            expanded_data = expander.expand_keywords(expander_data)
+
+            # Update only this ad group's keywords in session state
+            expanded_ad_group = expanded_data[0]["ad_groups"][0]
+            keywords_list = [kw.get('keyword', '') for kw in expanded_ad_group.get('keywords', [])]
+            st.session_state.structured_input[cat_idx]["ad_groups"][ad_idx]["keywords"] = "\n".join(keywords_list)
+        else:
+            st.error("❌ Invalid ad group selected for enrichment.")
+    except Exception as e:
+        st.error(f"❌ An error occurred during ad group enrichment: {e}")
 
 def _run_enrichment():
     """Triggers the enrichment process by first saving changes, then setting a flag."""

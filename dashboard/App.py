@@ -29,11 +29,14 @@ from dashboard.app_utils import (
     _run_analysis_pipeline,
     _save_changes,
     _format_percentage,
-    run_website_scan_cached
+    run_website_scan_cached,
+    _perform_enrichment_ad_group,
+    _run_enrichment_ad_group,
 )
 
 # Import the correct mappings for country and language
 from core.data_provider.google_ads_mappings import GEO_TARGET_MAP, LANGUAGE_MAP
+from core.ai_website_keyword_scanner import scan_website_for_keywords
 
 # --- Streamlit Page Configuration & CSS ---
 st.set_page_config(
@@ -250,7 +253,11 @@ def _merge_scanned_keywords_to_main_list():
     scanned_data = st.session_state.scanned_keywords_structured
     current_data = st.session_state.structured_input
 
-    new_data = scanned_data[0]['categories']
+    print("Copying")
+    print(scanned_data)
+    print(current_data)
+
+    new_data = scanned_data
     for category in new_data:
         for ad_group in category['ad_groups']:
             ad_group['keywords'] = "\n".join(ad_group['keywords'])
@@ -305,37 +312,25 @@ def _render_keyword_input_section():
             with col1:
                 def remove_category_with_rerun(cat_idx):
                     if 0 <= cat_idx < len(st.session_state.structured_input):
-                        # 1. Remove the category
-                        # Since the category is indexed by 'i', we can use the index directly.
-                        # You'll need to define _remove_category_by_index or adapt your existing one.
-                        # For simplicity, let's assume direct deletion based on index:
+                        # Remove the category
                         del st.session_state.structured_input[cat_idx]
 
-                        # 2. Clear stale widget states
-                        keys_to_delete = []
-                        for key in st.session_state.keys():
-                            # Clear all states related to the removed index 'cat_idx'
-                            # Note: This checks for keys *before* re-indexing.
-                            if key.startswith(f"category_name_input_{cat_idx}") or \
-                                    key.startswith(f"ad_group_name_input_{cat_idx}_") or \
-                                    key.startswith(f"keywords_text_area_{cat_idx}_"):
-                                keys_to_delete.append(key)
-
+                        # Clear all related widget states
+                        keys_to_delete = [key for key in st.session_state.keys()
+                                          if key.startswith(f"category_name_input_{cat_idx}") or
+                                          key.startswith(f"ad_group_name_input_{cat_idx}_") or
+                                          key.startswith(f"keywords_text_area_{cat_idx}_")]
                         for key in keys_to_delete:
                             del st.session_state[key]
 
-                        # 3. Sync remaining widget states (Re-index remaining items)
+                        # Re-index remaining widget states
                         for new_i, cat in enumerate(st.session_state.structured_input):
-                            # Update category name keys
                             st.session_state[f"category_name_input_{new_i}"] = cat["category_name"]
-
                             for new_j, ag in enumerate(cat["ad_groups"]):
-                                # Update ad group name keys
                                 st.session_state[f"ad_group_name_input_{new_i}_{new_j}"] = ag["ad_group_name"]
-                                # Update keywords text area keys (assuming you have this widget elsewhere)
-                                if f"keywords_text_area_{new_i}_{new_j}" in st.session_state:
-                                    st.session_state[f"keywords_text_area_{new_i}_{new_j}"] = ag.get("keywords", "")
+                                st.session_state[f"keywords_text_area_{new_i}_{new_j}"] = ag["keywords"]
 
+                        st.rerun()
                 category_name_key = f"category_name_input_{i}"
                 category_name_value = st.session_state.get(category_name_key, category["category_name"])
                 st.text_input(
@@ -379,18 +374,21 @@ def _render_keyword_input_section():
                         def remove_ad_group_with_rerun(cat_idx, ad_idx):
                             if 0 <= cat_idx < len(st.session_state.structured_input) and 0 <= ad_idx < len(
                                     st.session_state.structured_input[cat_idx]["ad_groups"]):
+                                # Remove the ad group
                                 _remove_ad_group(cat_idx, ad_idx)
-                                # Clear stale widget states
-                                for key in list(st.session_state.keys()):
-                                    if key.startswith(f"ad_group_name_input_{cat_idx}_") or key.startswith(
-                                            f"keywords_text_area_{cat_idx}_"):
-                                        del st.session_state[key]
-                                # Sync remaining widget states
-                                for new_i, cat in enumerate(st.session_state.structured_input):
-                                    st.session_state[f"category_name_input_{new_i}"] = cat["category_name"]
-                                    for new_j, ag in enumerate(cat["ad_groups"]):
-                                        st.session_state[f"ad_group_name_input_{new_i}_{new_j}"] = ag["ad_group_name"]
-                                        st.session_state[f"keywords_text_area_{new_i}_{new_j}"] = ag["keywords"]
+
+                                # Clear related widget states for this ad group
+                                keys_to_delete = [key for key in st.session_state.keys()
+                                                  if key.startswith(f"ad_group_name_input_{cat_idx}_{ad_idx}") or
+                                                  key.startswith(f"keywords_text_area_{cat_idx}_{ad_idx}")]
+                                for key in keys_to_delete:
+                                    del st.session_state[key]
+
+                                # Re-index widget states for the affected category
+                                for new_j, ag in enumerate(st.session_state.structured_input[cat_idx]["ad_groups"]):
+                                    st.session_state[f"ad_group_name_input_{cat_idx}_{new_j}"] = ag["ad_group_name"]
+                                    st.session_state[f"keywords_text_area_{cat_idx}_{new_j}"] = ag["keywords"]
+
                                 st.rerun()
 
                         st.button(
@@ -417,6 +415,14 @@ def _render_keyword_input_section():
                         args=(i, j)
                     )
                     st.markdown("One keyword per line.")
+
+                    st.button(
+                        "Enrich This Ad Group",
+                        on_click=_run_enrichment_ad_group,
+                        args=(i, j),
+                        key=f"enrich_ad_group_{i}_{j}",
+                        help="Enrich keywords for this ad group only"
+                    )
 
             st.markdown("---")
             st.button("Add Ad Group", on_click=_add_ad_group, args=(i,), key=f"add_ad_group_{i}",
@@ -660,6 +666,18 @@ def run():
         st.session_state.enrichment_triggered = False
         st.rerun()
 
+    if 'enrichment_ad_group_triggered' in st.session_state:
+        i, j = st.session_state.enrichment_ad_group_triggered
+        ad_group_name = st.session_state.structured_input[i]['ad_groups'][j]['ad_group_name']
+        with st.spinner(f"Enriching keywords for ad group '{ad_group_name}'..."):
+            _perform_enrichment_ad_group(i, j)
+            # Sync only the specific keywords widget state (mirroring global but targeted)
+            st.session_state[f"keywords_text_area_{i}_{j}"] = st.session_state.structured_input[i]["ad_groups"][j][
+                "keywords"]
+            _autosave_state_to_db()
+        del st.session_state.enrichment_ad_group_triggered
+        st.rerun()
+
     if 'analysis_triggered' in st.session_state and st.session_state.analysis_triggered:
         with st.spinner("Fetching historical data... This may take some time."):
             # Pass the single country and language selections to the analysis pipeline
@@ -742,15 +760,15 @@ def run():
                             crawl_depth,
                             max_pages,
                             max_keywords,
-                            # New Parameter:
                             headlines_only=headlines_only
                         )
+
                         st.session_state.scanned_keywords_structured = scanned_keywords_structured
 
                         if len(scanned_keywords_structured) > 0:
                             # Calculate total unique keywords found for the success message
                             total_keywords_found = sum(
-                                len(ag.get('keywords', [])) for cat in scanned_keywords_structured[0]['categories'] for
+                                len(ag.get('keywords', [])) for cat in scanned_keywords_structured for
                                 ag in cat.get('ad_groups', [])
                             )
                         else:
@@ -759,7 +777,7 @@ def run():
                             return
 
                         st.success(
-                            f"✅ Scan complete! {total_keywords_found} keywords have been categorized into {len(scanned_keywords_structured[0]['categories'])} categories.")
+                            f"✅ Scan complete! {total_keywords_found} keywords have been categorized into {len(scanned_keywords_structured)} categories.")
                     except Exception as e:
                         st.error(f"❌ An error occurred during the scan: {e}")
                         logging.error(f"❌ An error occurred during Scanning: {e}", exc_info=True)
@@ -768,27 +786,31 @@ def run():
                 st.warning("Please enter a valid URL to start the scan.")
 
             # --- Display Preview of Scanned Data ---
-            print(st.session_state.scanned_keywords_structured)
-            for i, category in enumerate(st.session_state.scanned_keywords_structured[0]['categories']):
-                with st.expander(
-                        f"Category: {category['category_name']} ({len(category.get('ad_groups', []))} Ad Groups)"):
-                    for j, ad_group in enumerate(category['ad_groups']):
-                        keywords_str = "\n".join(ad_group.get('keywords', ''))
-                        keyword_count = len(ad_group.get('keywords', []))
-                        st.text_area(
-                            f"Ad Group: {ad_group['ad_group_name']} ({keyword_count} keywords)",
-                            value=keywords_str,
-                            height=100,
-                            key=f"scanned_kw_display_{i}_{j}",
-                            help="Keywords generated by AI. One keyword per line.",
-                            disabled=True
-                        )
+            if st.session_state.scanned_keywords_structured:
+                for i, category in enumerate(st.session_state.scanned_keywords_structured):
+                    with st.expander(
+                            f"Category: {category['category_name']} ({len(category.get('ad_groups', []))} Ad Groups)"):
+                        for j, ad_group in enumerate(category['ad_groups']):
+                            keywords_str = "\n".join(ad_group.get('keywords', ''))
+                            keyword_count = len(ad_group.get('keywords', []))
+                            st.text_area(
+                                f"Ad Group: {ad_group['ad_group_name']} ({keyword_count} keywords)",
+                                value=keywords_str,
+                                height=100,
+                                key=f"scanned_kw_display_{i}_{j}",
+                                help="Keywords generated by AI. One keyword per line.",
+                                disabled=True
+                            )
 
             # Button to copy keywords to the main list (Now fully functional)
+        if st.session_state.get("scanned_keywords_structured"):
             if st.button("Copy Scanned Categories to Main List", key="copy_scanned_keywords_button",
                          use_container_width=True):
                 _merge_scanned_keywords_to_main_list()
                 st.rerun()
+
+
+
 
 
 if __name__ == "__main__":
